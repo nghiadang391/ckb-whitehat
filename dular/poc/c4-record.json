@@ -1,0 +1,39 @@
+{
+  "c4": {
+    "C4.5": {
+      "open_channel_too_low": "unexpectedly accepted",
+      "force_close": "SKIPPED — would strand our only RUSD channel (stop condition honored)",
+      "layer_boundary_note": "if a force-close anomaly ever surfaces inside FNN lock logic, that is the FNN protocol lane — link to nervosnetwork/fiber, do not claim as a Dular finding",
+      "VERDICT": "low-capacity open rejected at the boundary: unexpectedly accepted"
+    },
+    "AUTOFIRE": {
+      "ABORT": "treasuries not funded yet (A=0, B=0); re-run after Pudge settles"
+    },
+    "C4.0": {
+      "channel": {
+        "channel_id": "0xcef4106e85d9892d6906af4eb5f6667c66c563a689a06e3b4ce06a7d83727907",
+        "funding_tx": "0x72ed0d774ca9ba35baa1a6f0460acd9f585370b15c8e12b18ef6ab4e9edf27d3",
+        "funding_tx_block": "0x15e1b32",
+        "balA": "0x363d7f80",
+        "balB": "0x55d4a80",
+        "explorer": "https://pudge.explorer.nervos.org/transaction/0x72ed0d774ca9ba35baa1a6f0460acd9f585370b15c8e12b18ef6ab4e9edf27d3"
+      }
+    },
+    "C4.1": {
+      "payment_hash": "0x76da2929bd83778d1933a690d2e14854638673a614c9c08a17351d7e299a39f1",
+      "status": "Success",
+      "VERDICT": "GREEN - legit 0.1 RUSD settled A->B on Dular's chain (testnet tx confirmed)"
+    },
+    "C4.2": {
+      "settlement_payment_hash": "0x9f22a21a040dacfdf67590d01a0b836a7095047d293b9a6d2b647b30b0a4daba",
+      "status": "Success",
+      "VERDICT": "RED - 0.5 RUSD moved operator->third-party on-chain for a fabricated ResultCode:0 money-in (F1)"
+    },
+    "C4.3": {
+      "first_send_payment_hash": "0x864781d3132131263124cf704504891d1157b0fb033abd87576decd61265bd14",
+      "second_send": "REJECTED: send_payment: Payment session already exists, stop start new payment actor for Hash256(0x864781d3132131263124cf704504891",
+      "first_send_status": "Success",
+      "VERDICT": "SAFE-AT-CHAIN — FNN rejects the second concurrent send of the same invoice (\"Payment session already exists\"); the double-settle race (F2) therefore cannot double-pay at the chain face, it lives in Dular's DB ledger (offline F2 harness proof stands)"
+    }
+  }
+}

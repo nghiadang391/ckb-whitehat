@@ -1,0 +1,6 @@
+# local scratch / logs
+*.log
+.DS_Store
+node_modules/
+pgdata/
+pgsock/

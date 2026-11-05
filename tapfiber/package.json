@@ -1,0 +1,15 @@
+{
+  "name": "tapfiber-core",
+  "version": "0.1.0",
+  "description": "Payment request, order state, and receipt primitives for Fiber applications",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": "./src/index.js",
+  "bin": { "tapfiber": "bin/tapfiber.js" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": ["ckb", "nervos", "fiber", "nfc", "payments"]
+}
