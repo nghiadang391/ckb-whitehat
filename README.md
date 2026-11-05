@@ -35,6 +35,21 @@ Then `/ckb-whitehat` runs a new challenge, and the skill applies to any
 project with money, state, auth, or chain interaction — CKB/Fiber is the anchor
 lane, not a hard requirement.
 
+## The CLI
+
+A terminal front-end for the same method, in the spirit of `no-mistakes`:
+
+```sh
+cd cli && npm link
+ckb-whitehat init ~/src/target-repo --scope app,chain
+ckb-whitehat run --target ~/src/target-repo
+```
+
+It drives your local agent CLI (`claude -p`) through the challenge and writes
+`FINDINGS.md` to a workspace outside the target repo. Like no-mistakes, it
+**never asks for an API key** — the agent binary carries its own auth. See
+[cli/README.md](cli/README.md).
+
 ## Dular
 
 - `dular/poc/f1…f8f9-*.mjs` — offline PoCs. The app must be available at
