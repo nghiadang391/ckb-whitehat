@@ -15,7 +15,25 @@ deterministic artifact.
 |---|---|---|---|
 | [dular](dular/) — M-Pesa STK-push → RUSD on-ramp over Fiber | app/DB/config (F1–F9) + on-chain C4.1–C4.5 | `node dular/poc/<finding>.mjs` | [dular/FINDINGS.md](dular/FINDINGS.md) |
 | [tapfiber](tapfiber/) — tap-to-pay order/receipt library (pure logic) | offline only (S1–S7) | `node tapfiber/poc/attack.mjs` | [tapfiber/FINDINGS.md](tapfiber/FINDINGS.md) |
-| [skill-methodology.md](skill-methodology.md) | the method, generalized | — | — |
+
+## The method (installable skill)
+
+`.claude/skills/ckb-whitehat/SKILL.md` — the generalized methodology: scope &
+consent rules, the triage -> hypothesis -> PoC -> patch workflow, token-efficiency
+rules learned from real runs, the PoC quality bar (assert observable state, not
+string-greps of your own source), a CKB/Fiber cheatsheet, and the FINDINGS.md
+template.
+
+Install it into your own Claude Code setup:
+
+```sh
+git clone https://github.com/nghiadang391/ckb-whitehat.git
+cp -r ckb-whitehat/.claude/skills/ckb-whitehat ~/.claude/skills/
+```
+
+Then `/ckb-whitehat` runs a new challenge, and the skill applies to any
+project with money, state, auth, or chain interaction — CKB/Fiber is the anchor
+lane, not a hard requirement.
 
 ## Dular
 
