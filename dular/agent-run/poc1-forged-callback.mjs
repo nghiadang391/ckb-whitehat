@@ -18,7 +18,7 @@ import { startFnnStub, startChannelStub } from './fnnstub.mjs'
 import { pg } from './deps.mjs'
 import { ensureScratchDb } from './dbsetup.mjs'
 
-const REPO = '/tmp/ckb-whitehat/dular2/repo'
+const REPO = process.env.CKB_WHITEHAT_TARGET || '/tmp/ckb-whitehat/dular2/repo'
 const PORT = 8791
 const STUB_OP = 8427
 const STUB_RX = 8437
@@ -105,13 +105,16 @@ console.log(`[state] deposit status=${row?.status} fiber_status=${row?.fiber_sta
 console.log(`[state] ledger ${bal0} -> ${bal1}`)
 console.log(`[state] fiber_payments row: ${fp[0] ? `${fp[0].direction}/${fp[0].status}/${fp[0].source_type} ${fp[0].payment_hash}` : 'none'}`)
 console.log(`[stub] operator send_payment calls=${sendCalls}`)
-if (credit && sendCalls > 0 && row?.status === 'completed') {
+const fired = credit && sendCalls > 0 && row?.status === 'completed'
+if (fired) {
   console.log('F1 FIRED — forged callback completed the deposit: real operator send_payment + ledger credit, zero M-Pesa money in, zero Daraja calls.')
+  console.log('FINDING F1 FIRED')
 } else {
   console.log(`F1 check: credit=${credit} sendCalls=${sendCalls} status=${row?.status}`)
+  console.log('FINDING F1 UNPROVEN')
 }
 
 app.kill()
 await new Promise(r => setTimeout(r, 300))
 stub.close(); stubRx.close()
-process.exit(0)
+process.exit(fired ? 0 : 1)

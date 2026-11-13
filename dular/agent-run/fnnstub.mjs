@@ -66,7 +66,7 @@ export function startChannelStub(stub, pubkey, localBalance) {
   stub.channels[pubkey] = [{
     channel_id: '0x' + 'a0'.repeat(32),
     temporary_channel_id: '0x' + 'a0'.repeat(32),
-    channel_outpoint: '0x' + 'b0'.repeat(32) + ':0x0',
+    channel_outpoint: '0x' + 'b0'.repeat(32) + '00000000',
     state: { state_name: 'ChannelReady' },
     is_public: true,
     enabled: true,

@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { pg } from './deps.mjs'
 
-const REPO = '/tmp/ckb-whitehat/dular2/repo'
+const REPO = process.env.CKB_WHITEHAT_TARGET || '/tmp/ckb-whitehat/dular2/repo'
 const DB = 'dular_whitehat'
 const PORT = 5433
 const candidates = [

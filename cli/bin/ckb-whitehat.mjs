@@ -43,13 +43,16 @@ const DEFAULT_STALL_TIMEOUT = 300
 // re-arm the stall timer forever by printing a byte every few minutes
 const DEFAULT_MAX_RUNTIME = 3600
 
+// Flags accept both `--name value` and `--name=value`.
 const flag = (name, dflt = undefined) => {
+  const eq = args.find((a) => a.startsWith(`--${name}=`))
+  if (eq) return eq.slice(name.length + 3)
   const i = args.indexOf(`--${name}`)
   if (i === -1) return dflt
   const v = args[i + 1]
   return v && !v.startsWith('--') ? v : true
 }
-const has = (name) => args.includes(`--${name}`)
+const has = (name) => args.includes(`--${name}`) || args.some((a) => a.startsWith(`--${name}=`))
 // flags that consume the next argument as their value
 const VALUE_FLAGS = new Set(['scope', 'agent', 'target', 'allowed-tools', 'stall-timeout', 'max-runtime'])
 // first positional argument that is not a flag (and not a flag's value)
@@ -58,6 +61,7 @@ const positional = () => {
     const a = args[i]
     if (a.startsWith('--')) {
       const name = a.slice(2)
+      if (a.includes('=')) continue
       if (VALUE_FLAGS.has(name) && args[i + 1] && !args[i + 1].startsWith('--')) i++
       continue
     }
@@ -71,12 +75,25 @@ const die = (msg, code = 2) => { console.error(`ckb-whitehat: ${msg}`); process.
 // --- workspace layout -------------------------------------------------------
 // The workspace lives OUTSIDE the target repo: the agent must never run code
 // from inside an untrusted clone (an interpreter loads code from its own cwd).
-const workspaceFor = (target) => path.join(os.homedir(), '.ckb-whitehat', path.basename(path.resolve(target)))
+// Key on the full resolved path, not just the basename: ~/a/app and ~/b/app are
+// different targets and must not share a workspace.
+const legacyWorkspaceFor = (target) => path.join(os.homedir(), '.ckb-whitehat', path.basename(path.resolve(target)))
+const workspaceFor = (target) => {
+  const resolved = path.resolve(target)
+  const slug = resolved.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase()
+  const dir = path.join(os.homedir(), '.ckb-whitehat', slug || 'root')
+  // a workspace created before the slug change still lives under the basename
+  if (!fs.existsSync(dir)) {
+    const legacy = legacyWorkspaceFor(target)
+    if (fs.existsSync(legacy)) return legacy
+  }
+  return dir
+}
 
 function detectAgents() {
   const candidates = [
-    { name: 'claude', bin: 'claude', args: ['-p'], allowedTools: true },
-    { name: 'codex', bin: 'codex', args: ['exec'], allowedTools: false },
+    { name: 'claude', bin: 'claude', args: ['-p'], allowedTools: true, claudeFlags: true },
+    { name: 'codex', bin: 'codex', args: ['exec'], allowedTools: false, claudeFlags: false },
   ]
   const found = []
   for (const c of candidates) {
@@ -215,9 +232,12 @@ const maxRuntime = () => {
 
 // Spawn the agent, watching for output silence and total wall time. Resolves
 // with { code, stdout, stderr, stalled, timedOut }.
-function spawnAgent(bin, agentArgs, env) {
+// cwd MUST be the workspace, never the target: an agent started inside an
+// untrusted clone would auto-load that clone's .claude/ settings, hooks and
+// MCP servers, and its node_modules would shadow the workspace's.
+function spawnAgent(bin, agentArgs, env, cwd) {
   return new Promise((resolve) => {
-    const child = spawn(bin, agentArgs, { stdio: ['ignore', 'pipe', 'pipe'], env, detached: true })
+    const child = spawn(bin, agentArgs, { stdio: ['ignore', 'pipe', 'pipe'], env, cwd, detached: true })
     let stdout = ''
     let stderr = ''
     let last = Date.now()
@@ -307,13 +327,17 @@ async function run(targetDir) {
   const agentArgs = [...agent.args]
   if (agent.allowedTools && allowed.length) agentArgs.push('--allowedTools', allowed.join(','))
   if (skipPerms) agentArgs.unshift('--dangerously-skip-permissions')
-  agentArgs.push('--permission-mode', 'acceptEdits', '--add-dir', target, '--output-format', 'text', prompt)
+  // only claude understands these flags; `codex exec` would reject them
+  if (agent.claudeFlags) {
+    agentArgs.push('--permission-mode', 'acceptEdits', '--add-dir', target, '--output-format', 'text')
+  }
+  agentArgs.push(prompt)
 
   const res = await spawnAgent(agent.bin, agentArgs, {
     ...process.env,
     CKB_WHITEHAT_WORKSPACE: ws,
     CKB_WHITEHAT_TARGET: target,
-  })
+  }, ws)
 
   fs.writeFileSync(out, res.stdout + (res.stderr ? '\n--- stderr ---\n' + res.stderr : ''))
   if (res.stdout.trim()) console.log(res.stdout.split('\n').slice(-40).join('\n'))
@@ -333,14 +357,20 @@ async function run(targetDir) {
     code = 1
   }
 
-  const m = res.stdout.match(/CKB-WHITEHAT-RESULT: findings=(\d+) fired=(\d+) report=(\S+)/)
+  // take the LAST marker: the agent may print an intermediate one
+  const markers = [...res.stdout.matchAll(/CKB-WHITEHAT-RESULT: findings=(\d+) fired=(\d+) report=(.+)/g)]
+  const m = markers.length ? markers[markers.length - 1] : null
   const checks = verifyRun(ws, res.stdout, m)
   console.log('\ncompleteness:')
   for (const c of checks) console.log(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.what}`)
 
   if (m) {
-    console.log(`\nfindings=${m[1]} fired=${m[2]}`)
-    console.log(`report: ${m[3]}`)
+    const findings = Number(m[1])
+    const fired = Number(m[2])
+    console.log(`\nfindings=${findings} fired=${fired}`)
+    console.log(`report: ${m[3].trim()}`)
+    // documented exit codes: 0 ok, 1 finding/error, 2 bad usage
+    if (findings > 0 || fired > 0) code = 1
   } else {
     console.log('\n(no CKB-WHITEHAT-RESULT marker found - check the log; the run may have stopped early)')
     code = 1
@@ -356,15 +386,30 @@ async function run(targetDir) {
 function verifyRun(ws, stdout, marker) {
   const reportPath = path.join(ws, 'FINDINGS.md')
   const pocDir = path.join(ws, 'poc')
-  const reportOk = fs.existsSync(reportPath) && fs.readFileSync(reportPath, 'utf8').trim().length > 200
+  const report = fs.existsSync(reportPath) ? fs.readFileSync(reportPath, 'utf8') : ''
+  const reportOk = report.trim().length > 200
   const pocs = fs.existsSync(pocDir)
     ? fs.readdirSync(pocDir).filter((f) => fs.statSync(path.join(pocDir, f)).isFile() && !f.startsWith('.'))
     : []
-  return [
+  // a clean run (findings=0) has nothing to prove: verdict lines and PoC files
+  // are only required when the marker reports findings. SKILL.md requires each
+  // PoC to end in a machine-readable verdict line, and the report to carry the
+  // same - a run that produced neither has proven nothing, however good the prose looks.
+  const hasFindings = marker ? Number(marker[1]) > 0 : false
+  const verdictLines = [...stdout.matchAll(/^FINDING\s+(\S+)\s+(FIRED|UNPROVEN|STRUCTURAL)\b/gm)]
+  const reportVerdicts = [...report.matchAll(/^FINDING\s+(\S+)\s+(FIRED|UNPROVEN|STRUCTURAL)\b/gm)]
+  const checks = [
     { what: `report exists and is non-trivial: ${reportPath}`, ok: reportOk },
-    { what: `at least one PoC file in ${pocDir}`, ok: pocs.length > 0 },
     { what: 'agent printed the CKB-WHITEHAT-RESULT: marker', ok: Boolean(marker) },
   ]
+  if (hasFindings) {
+    checks.push(
+      { what: `at least one PoC file in ${pocDir}`, ok: pocs.length > 0 },
+      { what: `a FINDING <id> verdict line was printed (${verdictLines.length})`, ok: verdictLines.length > 0 },
+      { what: `the report carries FINDING verdict lines (${reportVerdicts.length})`, ok: reportVerdicts.length > 0 },
+    )
+  }
+  return checks
 }
 
 // --- status / report --------------------------------------------------------
