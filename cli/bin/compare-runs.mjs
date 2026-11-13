@@ -35,7 +35,15 @@ const overlap = (a, b) => {
   for (const w of A) if (B.has(w)) hit++
   return hit / Math.min(A.size, B.size)
 }
-const sameFinding = (a, b) => a.id === b.id || overlap(a.title, b.title) >= 0.45
+// Match by CONTENT, never by id: two reports both number a finding "F4" but
+// may mean completely different things, and id-matching produces false
+// coverage claims. An id match is only trusted when the titles also agree.
+const sameFinding = (a, b) => {
+  const t = overlap(a.title, b.title)
+  if (t >= 0.45) return true
+  if (a.id === b.id && t >= 0.25) return true
+  return false
+}
 
 const newMd = read(newPath)
 const newF = ids(newMd)
