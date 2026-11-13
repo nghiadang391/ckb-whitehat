@@ -18,7 +18,8 @@ threat model (findings are hypotheses). No finding is deliverable until it
 terminates in one deterministic, replayable artifact: an exploit transaction,
 a forged input that lands a bad state, a race that drains a balance —
 reproducible with a single command against *unmodified source*. Never report an
-AI opinion as a result.
+AI opinion as a result, and never report a finding whose PoC was never
+executed — an unrun PoC is not evidence.
 
 ---
 
@@ -74,11 +75,15 @@ money on-chain (the chain executed it faithfully); it is not a chain bug.
     (forged input / race / fuzz / config-matrix / static assert). Keep to ~10;
     cut to ~5 for solo delivery.
 4.  PoC: one deterministic block per accepted hypothesis. Each prints a
-    before/after or a fail/pass line, reproducible with one command.
+    before/after or a fail/pass line, reproducible with one command. **Write
+    it, then RUN it.** A PoC is only a PoC once it has been executed against the
+    target and its claimed output has been observed. Nothing reaches the
+    report that has not been run (see "The PoC must actually run").
 5.  State evidence (MANDATORY section, uniform across all targets). If the
     target holds on-chain or persistent state that a finding can move, prove
-    it there — baseline-green first, then the trace that makes the finding
-    concrete (forged credit → real testnet asset moves, tx hash recorded).
+    it there by running the PoC — baseline-green first, then the trace that
+    makes the finding concrete (forged credit → real testnet asset moves, tx
+    hash recorded).
     If the target has NO such state (pure logic library): write exactly one
     line — "N/A — target has no on-chain/persistent-asset interaction;
     findings terminate in code state, not txs." Never omit the section.
@@ -86,7 +91,9 @@ money on-chain (the chain executed it faithfully); it is not a chain bug.
     the *working fixed version* and re-run the same PoC to show it now passes
     (the regression pack: fail before, pass after).
 7.  Report: FINDINGS.md (template below).
-8.  Verify: every PoC reproduces; a `grep -rn` sweep confirms no real secret
+8.  Verify: every PoC reproduces (re-run it); drop any finding whose PoC you
+    cannot make run — an unrun PoC is not a finding. Also a `grep -rn` sweep
+    confirms no real secret
     material (provider keys, OTPs, phone PII, chain hex keys) leaked into the
     PoCs or report — only structure.
 ```
@@ -124,6 +131,28 @@ money on-chain (the chain executed it faithfully); it is not a chain bug.
 - **Split findings by who decides the fix.** Mechanical/low-risk findings you
   patch yourself ("auto-fix"); findings that change product behavior or assume
   intent you escalate to the user ("ask-user"). Severity maps onto this.
+- **Quoted output is captured, not composed.** The PoC's own quotes must come
+  from a captured run (the real stdout/stderr you saw), never paraphrased or
+  predicted. The harness must end with one machine-readable verdict line —
+  `FINDING <id> FIRED`, `FINDING <id> UNPROVEN`, or
+  `FINDING <id> STRUCTURAL` — so a reader (or the CLI) can check the claim
+  without reading the script.
+
+### The PoC must actually run
+- A PoC that was written but never executed is **not a finding. Do not report
+  it.** "AI finds, the PoC proves" means the PoC has to have run.
+- If a PoC errors (syntax error, bad import, wrong method), the defect is in
+  **your** harness — fix the PoC until it runs. Do not reinterpret a crash
+  or a 500 as "the target rejected the exploit."
+- Never write a quoted "run output" block you did not observe from an actual
+  run. If you cannot get it to run, report the finding as **UNPROVEN** with
+  the exact error you saw.
+- The report must distinguish: **PROVEN** (executed, output observed) vs
+  **UNPROVEN** (reasoned from code but not executed). Only PROVEN findings
+  may claim money movement.
+- A PoC that needs the target's internal state set up (a specific DB row, a
+  funded address) is fine — set that state up explicitly inside the PoC and
+  say so in the report.
 
 ### Domain cheatsheet: CKB + Fiber (only what actually costs tokens to rediscover)
 - **Testnets:** `testnet.ckb.dev` ≡ `testnet.ckbapp.dev` (Lina/Puce) — the
@@ -155,6 +184,9 @@ money on-chain (the chain executed it faithfully); it is not a chain bug.
 upfront):** CKB — https://docs.nervos.org/ · Fiber — https://www.fiber.world/docs
 
 ### Offline PoC recipes (fast, committee-grade)
+Each recipe below is a strategy, not a deliverable: **every recipe you use
+must be executed and must end in a `FINDING <id> ...` verdict line**, or the
+finding is UNPROVEN. A Static-class "PoC" that is only a grep has not run.
 - Boot the target's app locally (its own `DEMO_MODE`/local Postgres, its own
   `migrate.js`), vendors stubbed at `node:https`/`fetch`. No live calls.
 - **Forged-callback class:** POST a forged provider success; assert a ledger
@@ -199,20 +231,37 @@ ONE overview table per layer up top, single-line rows; deep analysis goes in
 the detail sections that follow, in the same order.
 
 ### Offline findings
-| # | Finding (one clause) | Sev | Result (fired/structural) | Money-path? |
+| # | Finding (one clause) | Sev | Status (PROVEN/UNPROVEN/STRUCTURAL) | Money-path? |
 |---|---|---|---|---|
-| **F1** | <one clause> | <sev> | fired | yes/no |
+| **F1** | <one clause> | <sev> | PROVEN (fired) | yes/no |
+
+Status states, exactly:
+- **PROVEN** — the PoC ran and its claimed output was observed. Only a PROVEN
+  row may say "fired" and only a PROVEN row may claim money movement.
+- **UNPROVEN** — reasoned from code but the PoC did not run (or errored). Not
+  a finding yet; say what blocked it.
+- **STRUCTURAL** — a static/code-shape observation (no executable exploit),
+  e.g. a dangerous default or a missing check.
 
 ### On-chain / state evidence
 | Trace | App finding proven | Result (GREEN/RED/SAFE) | payment/tx hash |
 |---|---|---|---|
 | **C1** | control | GREEN | `0x…` |
+A RED row requires a trace that was actually executed and observed on our own
+testnet addresses. A finding whose on-chain trace never ran is UNPROVEN — it
+cannot produce a RED row; write "not executed" in the trace column instead.
 
-## F1 — <name> (<SEV>)
+## F1 — <name> (<SEV>) — <PROVEN|UNPROVEN|STRUCTURAL>
 <code region + why the default is the foot-gun>
-PoC (run output):
+PoC (run output, captured from an actual run):
 ```
-<before -> after, or fail/pass lines, quoted>
+<before -> after, or fail/pass lines, quoted — only if it actually ran>
+FINDING F1 FIRED
+```
+For an UNPROVEN finding, replace the block with:
+```
+PoC not executed — error: <exact error observed>
+FINDING F1 UNPROVEN
 ```
 Impact: <one concrete, non-exaggerated line. Say if it needs a hostile/sloppy
 caller — don't overstate "remotely exploitable" for a library default.>
@@ -245,7 +294,8 @@ upstream chain/FNN issue tripped was linked, not claimed.
 ## Honest limitations
 <1–5 bullets: mocked boundaries, default-path-not-remote-exploit,
 probabilistic vs deterministic PoC, "our addresses on a shared testnet"
-wording.>
+wording. **If any finding is UNPROVEN, list it here by id and say what
+blocked it** — an unlisted UNPROVEN finding reads as PROVEN.>
 ```
 
 ## 6. Delivery & disclosure
