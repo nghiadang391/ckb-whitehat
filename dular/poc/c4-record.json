@@ -1,10 +1,14 @@
 {
   "c4": {
     "C4.5": {
-      "open_channel_too_low": "unexpectedly accepted",
+      "open_channel_too_low": "unexpectedly accepted (original probe: a 1-base-unit open_channel was ACCEPTED into pending-manual-accept, not rejected)",
       "force_close": "SKIPPED — would strand our only RUSD channel (stop condition honored)",
       "layer_boundary_note": "if a force-close anomaly ever surfaces inside FNN lock logic, that is the FNN protocol lane — link to nervosnetwork/fiber, do not claim as a Dular finding",
-      "VERDICT": "low-capacity open rejected at the boundary: unexpectedly accepted"
+      "VERDICT": "by-design guard held — sub-minimum opens park pending manual accept; NOT an auto-approval of low-capacity channels",
+      "reverification": "re-verified from record + live fnn log (fresh probe is opt-in: C4_FIRE=1)",
+      "node_auto_accept_min": "0x3b9aca00",
+      "prior_log_evidence": "\"funding amount 1 is less than required auto-accept minimum 1000000000 … will not be auto-accepted and is pending manual acceptance\" (fnn-b091.log)",
+      "recorded_outcome": "the original 1-base-unit probe was ACCEPTED into the pending-manual-accept state (by-design guard), NOT hard-rejected"
     },
     "AUTOFIRE": {
       "ABORT": "treasuries not funded yet (A=0, B=0); re-run after Pudge settles"
@@ -13,27 +17,73 @@
       "channel": {
         "channel_id": "0xcef4106e85d9892d6906af4eb5f6667c66c563a689a06e3b4ce06a7d83727907",
         "funding_tx": "0x72ed0d774ca9ba35baa1a6f0460acd9f585370b15c8e12b18ef6ab4e9edf27d3",
-        "funding_tx_block": "0x15e1b32",
+        "funding_tx_status": "tx_status=committed block=0x15e1b32",
+        "balA_now": "0x32116200",
+        "balB_now": "0x9896800",
         "balA": "0x363d7f80",
         "balB": "0x55d4a80",
         "explorer": "https://pudge.explorer.nervos.org/transaction/0x72ed0d774ca9ba35baa1a6f0460acd9f585370b15c8e12b18ef6ab4e9edf27d3"
-      }
+      },
+      "settlement_breakdown": [
+        {
+          "label": "C4.1 baseline",
+          "payment_hash": "0x76da2929bd83778d1933a690d2e14854638673a614c9c08a17351d7e299a39f1",
+          "status": "Success",
+          "amount_base_units": "10000000"
+        },
+        {
+          "label": "C4.2 forged-callback settlement",
+          "payment_hash": "0x9f22a21a040dacfdf67590d01a0b836a7095047d293b9a6d2b647b30b0a4daba",
+          "status": "Success",
+          "amount_base_units": "50000000"
+        },
+        {
+          "label": "earlier-run C4.3-style probe, 0.2 RUSD invoice (0x97263bb8)",
+          "payment_hash": "0x97263bb87f67500bb607816c0cfd944e7794fe3fafba75157ba0fd039a1c0e01",
+          "status": "Success",
+          "amount_base_units": "20000000"
+        },
+        {
+          "label": "C4.3 first send (0x864781d3)",
+          "payment_hash": "0x864781d3132131263124cf704504891d1157b0fb033abd87576decd61265bd14",
+          "status": "Success",
+          "amount_base_units": "10000000"
+        },
+        {
+          "label": "earlier-run settlement, 0.1 RUSD (0x3d30f70d)",
+          "payment_hash": "0x3d30f70d02be6981679488b104a445b824e5ea2bdd2e83f1b522656a5c12b4af",
+          "status": "Success",
+          "amount_base_units": "10000000"
+        }
+      ],
+      "reconcile": "At the c4-finalize2 snapshot balB was 0.9 RUSD (900000000 base units). Measured from the chain (invoice amounts via get_invoice + parse_invoice; settlement order per the FNN settle-tlc log), that 0.9 itemizes as C4.1 0x76da2929… 0.1 + C4.2 0x9f22a21a… 0.5 + 0x97263bb8… 0.2 + 0x3d30f70d… 0.1 = 0.9 — an exact match. The recorded C4.3 first send 0x864781d3… (0.1 RUSD) settled immediately after that snapshot. The original report's \"0.1 + 0.5 + 0.1 = 0.7\" breakdown was short by 0.2: it never itemized 0x97263bb8… (0.2 RUSD, an earlier-run C4.3-style probe on this same channel). Two of the five settled commitments (0x97263bb8, 0x3d30f70d) came from earlier runs, not from the C4.1/C4.2/C4.3 traces. No RUSD left the channel other than these settled payments. balB now reads 1.60 RUSD (it has grown since the 0.9 snapshot because re-firing the C4.1/C4.2/C4.3/C4.6 verification sends — opt-in, C4_FIRE=1 — each moves more RUSD A->B; the live balance is not fixed between runs)."
     },
     "C4.1": {
       "payment_hash": "0x76da2929bd83778d1933a690d2e14854638673a614c9c08a17351d7e299a39f1",
       "status": "Success",
-      "VERDICT": "GREEN - legit 0.1 RUSD settled A->B on Dular's chain (testnet tx confirmed)"
+      "VERDICT": "GREEN - legit 0.1 RUSD settled A->B on Dular's chain (re-verified by hash)",
+      "reverified": true,
+      "invoice_amount": "0x989680",
+      "nodeA_pubkey": "0382ab4a77ac3e80f1557b8bb85dd79bcb424c236345ade78a3f40232f245518b6",
+      "nodeB_pubkey": "031dea545a3dccb00bc246affde06814dafe231cc6b20f950e87084922c4c4d0c3"
     },
     "C4.2": {
       "settlement_payment_hash": "0x9f22a21a040dacfdf67590d01a0b836a7095047d293b9a6d2b647b30b0a4daba",
       "status": "Success",
-      "VERDICT": "RED - 0.5 RUSD moved operator->third-party on-chain for a fabricated ResultCode:0 money-in (F1)"
+      "VERDICT": "RED - 0.5 RUSD moved operator->third-party on-chain for a fabricated ResultCode:0 money-in (F1), re-verified by hash",
+      "reverified": true,
+      "invoice_amount": "0x2faf080"
     },
     "C4.3": {
       "first_send_payment_hash": "0x864781d3132131263124cf704504891d1157b0fb033abd87576decd61265bd14",
-      "second_send": "REJECTED: send_payment: Payment session already exists, stop start new payment actor for Hash256(0x864781d3132131263124cf704504891",
+      "second_send": "REJECTED (recorded): \"Payment session already exists, stop start new payment actor for Hash256(0x864781d3…5bd14)\"",
       "first_send_status": "Success",
-      "VERDICT": "SAFE-AT-CHAIN — FNN rejects the second concurrent send of the same invoice (\"Payment session already exists\"); the double-settle race (F2) therefore cannot double-pay at the chain face, it lives in Dular's DB ledger (offline F2 harness proof stands)"
+      "VERDICT": "SAFE-AT-CHAIN — FNN rejects the second concurrent send of the same invoice; the double-settle race (F2) cannot double-pay at the chain face, it lives in Dular's DB ledger (offline F2 harness proof stands)"
+    },
+    "C4.4": {
+      "attach_validator_on_wrong_amount": "Fiber invoice amount does not match the quote",
+      "note": "validateRampInvoice runs ONCE, at invoice-attach time (rampRoutes). The settlement path (applyStkResult -> settlePaidDeposit -> sendFiberPayment) pays the stored browser_invoice as-is; there is no independent chain-side re-derivation of \"how much M-Pesa money actually arrived\" before RUSD is released",
+      "VERDICT": "AMBER — amount/payee guards are attach-time only; the settle path trusts the stored invoice (F1/F4)"
     }
   }
 }

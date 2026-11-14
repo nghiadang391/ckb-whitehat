@@ -52,16 +52,28 @@ It drives your local agent CLI (`claude -p`) through the challenge and writes
 
 ## Dular
 
-- `dular/poc/f1…f8f9-*.mjs` — offline PoCs. The app must be available at
-  `DULAR_DIR` (default `/tmp/ckb-whitehat/dular/server`); set
-  `DULAR_DIR=/path/to/dular/server` to point at a local clone. Race PoC:
-  `f2-ledger-race.mjs` (fires against unmodified source; re-run with
-  `poc/fixed-ledger.js` to show the fix passes).
+- `dular/poc/f1…f8f9-*.mjs` — offline PoCs, each a one-command run against
+  unmodified target source. The target is located by `DULAR_DIR`, which takes
+  the **repository root** (default `/tmp/ckb-whitehat/dular2/repo`); a
+  `server/` dir is also accepted (detected by the presence of `schema.sql`
+  without a sibling `server/`). The PoCs' third-party deps (`pg`) resolve
+  through the target's own `node_modules` — this directory has no
+  package.json. DB-backed PoCs (f1, f2, f7) run against an isolated scratch
+  database seeded from the target's `schema.sql` and drop it on teardown.
+  Race PoC: `f2-ledger-race.mjs` (fires against unmodified source; Part C/D
+  re-run `poc/fixed-ledger.js` to show the fix passes and stays atomic when
+  nested inside an outer `withTransaction`).
 - `dular/poc/c4-onchain.mjs`, `c4-openchannel2.mjs`, `c4-finalize2.mjs` —
   on-chain evidence on CKB testnet via two local FNN nodes
-  (`127.0.0.1:8227/8327`). All results are recorded in
-  `dular/poc/c4-record.json`; the funding tx payload is in `fund-tx2.json`.
-  Impact confined to our own addresses and local services on a public testnet.
+  (`127.0.0.1:8227/8327`). All three default to re-verifying the settled
+  traces **by recorded hash** (no new RUSD moves; `get_transaction`
+  confirms the funding tx, with an explicit error path — never a masked
+  empty result). Fresh sends / the C4.5 probe are opt-in via
+  `C4_FIRE=1` and move more RUSD between our own two nodes. Results are
+  merged key-level into `dular/poc/c4-record.json` (historical entries
+  survive re-runs); the funding tx payload is in `fund-tx2.json`.
+  Impact confined to our own addresses and local services on a public
+  testnet.
 
 ## tapfiber
 

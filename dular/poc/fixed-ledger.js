@@ -7,8 +7,54 @@
 //
 // This is exactly the fix the repo's own db.js primitives (withTransaction)
 // make available — the bug is that ledger.js never used them.
+//
+// ---------------------------------------------------------------------------
+// NESTING RULE (this is the part the original PoC got wrong)
+// ---------------------------------------------------------------------------
+// The target calls ledger.credit()/debit() from INSIDE an outer
+// withTransaction() — e.g. server/index.js:1763, 2250/2257 and
+// server/services/settlement.js:146 all pass the transaction's `client`.
+//
+// If ledgerMutation() opened its OWN withTransaction() in that case it would
+// take a SECOND pool connection and a SECOND, INDEPENDENT transaction:
+//   - pool starvation (the pool's max clients are finite, and every nested
+//     call holds two connections instead of one), and
+//   - broken rollback atomicity: the inner transaction would COMMIT its
+//     ledger write even when the outer transaction later ROLLED BACK.
+//
+// So ledgerMutation() must REUSE the caller's client when that client is
+// already inside a transaction. Detection is NOT a flag on the client (the
+// target's withTransaction never sets one) — it asks the driver:
+//
+//   client.getTransactionStatus()  ->  'I' idle | 'T' in transaction | 'E' failed
+//
+// which is exactly what pg exposes for a connected Client. A pg Pool has no
+// such method and is by definition not inside a transaction, so it takes the
+// "open our own transaction" path.
+//
+// The same rule applies to the FOR UPDATE row lock: when we reuse the outer
+// client we are already in the outer transaction, so the lock is held until
+// the outer COMMIT/ROLLBACK — which is what makes the fix atomic end to end.
+//
+// ---------------------------------------------------------------------------
 
-import { withTransaction } from '/tmp/ckb-whitehat/dular/server/db.js'
+import { resolveTarget, targetImport } from './target.mjs'
+
+const { repoRoot, serverDir } = resolveTarget()
+const { withTransaction } = await targetImport(serverDir, 'db.js')
+
+export { repoRoot, serverDir }
+
+/** True when `client` is a pg client that is currently inside a transaction. */
+export function isInTransaction(client) {
+  if (!client) return false
+  if (typeof client.getTransactionStatus === 'function') {
+    const status = client.getTransactionStatus()
+    return status === 'T' || status === 'E'
+  }
+  // A pg Pool is never inside a transaction (it hands out separate clients).
+  return false
+}
 
 export async function ensureLedgerAccount(client, userId) {
   await client.query(
@@ -31,11 +77,12 @@ export async function getBalance(client, userId) {
 // account row locked for the duration of the transaction.
 async function ledgerMutation(client, op) {
   // If the caller already holds a transactional client (in-transaction),
-  // reuse it; otherwise open a short transaction around the mutation.
-  if (client.__inTransaction) {
+  // reuse it — so we join the caller's transaction instead of opening a
+  // second connection and a second, independently-committing transaction.
+  if (isInTransaction(client)) {
     return op(client)
   }
-  return withTransaction((tx) => { tx.__inTransaction = true; return op(tx) })
+  return withTransaction((tx) => op(tx))
 }
 
 export async function credit(client, { userId, amount, sourceType, sourceId, metadata = {} }) {

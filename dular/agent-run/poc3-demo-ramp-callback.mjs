@@ -19,7 +19,7 @@ import { startFnnStub, startChannelStub } from './fnnstub.mjs'
 import { pg } from './deps.mjs'
 import { ensureScratchDb } from './dbsetup.mjs'
 
-const REPO = '/tmp/ckb-whitehat/dular2/repo'
+const REPO = process.env.CKB_WHITEHAT_TARGET || '/tmp/ckb-whitehat/dular2/repo'
 const PORT = 8792
 const STUB_OP = 8447
 const STUB_RX = 8457
@@ -110,10 +110,15 @@ const sendCalls = stub.served.filter(s => s.method === 'send_payment').length
 console.log(`[state] order ${oRow.status} -> ${final.status} (fiber=${final.fiber_status} hash=${final.fiber_payment_hash})`)
 console.log(`[stub] operator send_payment calls=${sendCalls}`)
 const fired = ['completed', 'fiber_sending', 'delivery_pending'].includes(final.status) && final.fiber_payment_hash
-if (fired) console.log('F3 FIRED — demo-mode ramp callback accepted a forged M-Pesa success and advanced the order, triggering an operator send_payment.')
-else console.log('F3 check: final=' + final.status)
+if (fired) {
+  console.log('F3 FIRED — demo-mode ramp callback accepted a forged M-Pesa success and advanced the order, triggering an operator send_payment.')
+  console.log('FINDING F3 FIRED')
+} else {
+  console.log('F3 check: final=' + final.status)
+  console.log('FINDING F3 UNPROVEN')
+}
 
 app.kill()
 await new Promise(r => setTimeout(r, 300))
 stub.close(); stubRx.close()
-process.exit(0)
+process.exit(fired ? 0 : 1)

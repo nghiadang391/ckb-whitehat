@@ -3,7 +3,9 @@
 // a third-party library, not the target's own source code.
 import { createRequire } from 'node:module'
 
-const require = createRequire('/tmp/ckb-whitehat/dular2/repo/package.json')
+const require = createRequire(
+  `${process.env.CKB_WHITEHAT_TARGET || '/tmp/ckb-whitehat/dular2/repo'}/package.json`,
+)
 
 export const pg = require('pg')
 export const { Client } = pg

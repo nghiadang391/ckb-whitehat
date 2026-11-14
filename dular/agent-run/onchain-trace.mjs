@@ -7,7 +7,7 @@
 // executed the app's bug faithfully — it is not a chain bug.
 import { readFileSync } from 'node:fs'
 
-const REPO = '/tmp/ckb-whitehat/dular2/repo'
+const REPO = process.env.CKB_WHITEHAT_TARGET || '/tmp/ckb-whitehat/dular2/repo'
 const OP = 'http://127.0.0.1:8227'
 const RX = 'http://127.0.0.1:8327'
 const CKB_RPC = process.env.CKB_TESTNET_RPC_URL || 'https://testnet.ckb.dev/'
@@ -29,15 +29,27 @@ console.log(`[baseline] operator=${op.pubkey} channels=${op.channel_count} recei
 
 // operator on-chain RUSD capacity (the asset that actually funds channels)
 const RUSD = { code_hash: '0x1142755a044bf2ee358cba9f2da187ce928c91cd4dc8692ded0337efa677d21a', hash_type: 'type', args: '0x878fcc6f1f08d48e87bb1c3b3d5083f23f8a39c5d5c764f253b55b998526439b' }
+// sUDT amount = first 16 bytes of data, little-endian u128
+const rusdAmount = (hexData) => {
+  const h = String(hexData).replace(/^0x/i, '').slice(0, 32)
+  if (h.length < 32) return 0n
+  const bytes = h.match(/../g).reverse().join('')
+  return BigInt('0x' + bytes)
+}
 const lockArg = op.default_funding_lock_script?.args
-let onchainRusd = null, capacityOk = false
+let rusdCells = 0, rusdTotal = 0n, capacityOk = false
 try {
   if (lockArg) {
-    const cells = await ckb('get_cells', [{ script: { code_hash: '0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8', hash_type: 'type', args: lockArg }, script_type: 'lock' }, 'asc', '0x64'])
-    for (const c of cells.objects || []) if (c.output_data && BigInt(c.output_data) > 0n) capacityOk = true
-    onchainRusd = (cells.objects || []).length
+    // get_cells filters on ONE script: pull live RUSD (type-script) cells
+    // and narrow to the operator's lock locally. Filtering by the lock alone
+    // would count ANY non-empty data cell (including non-RUSD) as capacity.
+    const cells = await ckb('get_cells', [{ script: RUSD, script_type: 'type' }, 'asc', '0x64'])
+    const objs = (cells.objects || []).filter(c => c.output?.lock?.args === lockArg)
+    for (const c of objs) rusdTotal += rusdAmount(c.output_data)
+    rusdCells = objs.length
+    capacityOk = rusdTotal > 0n
   }
-  console.log(`[baseline] operator funding lock=${lockArg || 'none'} udt-cells-seen=${onchainRusd} has-capacity=${capacityOk}`)
+  console.log(`[baseline] operator funding lock=${lockArg || 'none'} rusd-cells=${rusdCells} rusd-total-base-units=${rusdTotal.toString()} has-capacity=${capacityOk}`)
 } catch (e) {
   console.log(`[baseline] on-chain read path unavailable: ${e.message}`)
 }

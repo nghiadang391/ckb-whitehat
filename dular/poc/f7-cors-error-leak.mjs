@@ -1,24 +1,34 @@
 // ckb-whitehat PoC — Dular: F7 wildcard CORS + internal error-message leak
 //
-// index.js line 60: `app.use(cors())` with NO options -> every response to an
-// Origin'd request carries Access-Control-Allow-Origin: *. index.js global
-// catch-all (line 2358): `res.status(400).json({ error: error.message })`
-// returns the raw internal error string to any client.
+// index.js: `app.use(cors())` with NO options -> every response to an
+// Origin'd request carries Access-Control-Allow-Origin: *. The global
+// catch-all: `res.status(400).json({ error: error.message })` returns the
+// raw internal error string to any unauthenticated client.
 //
-// PoC: boot the real app; send an Origin'd request and read back the CORS
-// header; POST a route whose domain error reaches the catch-all and show the
-// internal message in the 400 body.
+// This PoC boots the REAL app, sends an Origin'd request and reads back the
+// CORS header; POSTs a route whose domain error reaches the catch-all and
+// shows the internal message in the 400 body.
+//
+// The app runs against an ISOLATED scratch database (target's schema.sql),
+// dropped on teardown.
+//
+// Run: node f7-cors-error-leak.mjs
+// Env:  DULAR_DIR=<repo root>   (or a server/ dir — both accepted)
 
-process.env.DATABASE_URL = 'postgres://dular@127.0.0.1:5433/dular'
+import { resolveTarget, targetImport, ensureScratchDb, dropScratchDb, line } from './target.mjs'
+
+const { repoRoot, serverDir } = resolveTarget()
+const db = await ensureScratchDb(repoRoot, { name: 'dular_poc_f7' })
+process.env.DATABASE_URL = db.url
 
 const main = async () => {
-  line('F7 — wildcard CORS + global 400 handler leaking error.message')
-  const { default: app } = await import((process.env.DULAR_DIR || '/tmp/ckb-whitehat/dular/server') + '/index.js')
+  const { default: app } = await targetImport(serverDir, 'index.js')
   const http = await import('node:http')
   const server = http.createServer(app)
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const base = `http://127.0.0.1:${server.address().port}`
 
+  line('F7 — wildcard CORS + global 400 handler leaking error.message')
   const corsRes = await fetch(base + '/api/health', { headers: { Origin: 'https://evil.example' } })
   const acao = corsRes.headers.get('access-control-allow-origin')
   console.log('GET /api/health with Origin: evil.example -> ACAO =', JSON.stringify(acao))
@@ -35,10 +45,19 @@ const main = async () => {
     : 'inspect headers above')
 
   server.close()
-  const { pool } = await import((process.env.DULAR_DIR || '/tmp/ckb-whitehat/dular/server') + '/db.js')
+  const { pool } = await targetImport(serverDir, 'db.js')
   await pool.end()
-  process.exit(fired ? 0 : 1)
+
+  console.log(fired ? 'FINDING F7 FIRED' : 'FINDING F7 UNPROVEN')
+  return fired ? 0 : 1
 }
 
-function line(t) { console.log('\n=== ' + t + ' ===') }
-main().catch((e) => { console.error('F7 PoC error:', e); process.exit(2) })
+let exitCode = 0
+main()
+  .then((code) => { exitCode = code })
+  .catch((e) => { console.error('F7 PoC error:', e); exitCode = 2 })
+  .finally(async () => {
+    // Tear the scratch DB down BEFORE exiting so no PoC row survives.
+    await dropScratchDb(db)
+    process.exit(exitCode)
+  })

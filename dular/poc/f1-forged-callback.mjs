@@ -21,8 +21,19 @@
 //
 // Assertions: ledger/order state after the forged POST + a vendor-call
 // counter proving zero Daraja/Safaricom calls were made.
+//
+// The app runs against an ISOLATED scratch database seeded from the target's
+// own schema.sql and dropped on teardown.
+//
+// Run: node f1-forged-callback.mjs
+// Env:  DULAR_DIR=<repo root>   (or a server/ dir — both accepted)
 
-process.env.DATABASE_URL = 'postgres://dular@127.0.0.1:5433/dular'
+import { resolveTarget, targetImport, ensureScratchDb, dropScratchDb, line } from './target.mjs'
+
+const { repoRoot, serverDir } = resolveTarget()
+const db = await ensureScratchDb(repoRoot, { name: 'dular_poc_f1' })
+
+process.env.DATABASE_URL = db.url
 process.env.LEGACY_MANAGED_WALLET_ENABLED = 'true'   // F1-A surface (one env var)
 process.env.DEMO_MODE = 'true'                       // F1-B surface + bypass
 process.env.MPESA_ENVIRONMENT = 'production'         // shows demo fabricates even against prod config
@@ -67,11 +78,9 @@ globalThis.fetch = async (url, opts) => {
   return realFetch(url, opts)
 }
 
-const line = (t) => console.log('\n=== ' + t + ' ===')
-
 const main = async () => {
-  const { default: app } = await import((process.env.DULAR_DIR || '/tmp/ckb-whitehat/dular/server') + '/index.js')
-  const { pool } = await import((process.env.DULAR_DIR || '/tmp/ckb-whitehat/dular/server') + '/db.js')
+  const { default: app } = await targetImport(serverDir, 'index.js')
+  const { pool } = await targetImport(serverDir, 'db.js')
   const http = await import('node:http')
 
   const server = http.createServer(app)
@@ -163,7 +172,18 @@ const main = async () => {
 
   console.log('\n=== F1 verdict ===')
   console.log(`F1-A legacy forgery: ${aFired}    F1-B ramp demo-mode forgery: ${bFired}`)
-  process.exit(aFired || bFired ? 0 : 1)
+  console.log(`vendor calls made across the whole run: ${vendorCalls.length}`)
+  const fired = aFired || bFired
+  console.log(fired ? 'FINDING F1 FIRED' : 'FINDING F1 UNPROVEN')
+  return fired ? 0 : 1
 }
 
-main().catch((e) => { console.error('F1 PoC error:', e); process.exit(2) })
+let exitCode = 0
+main()
+  .then((code) => { exitCode = code })
+  .catch((e) => { console.error('F1 PoC error:', e); exitCode = 2 })
+  .finally(async () => {
+    // Tear the scratch DB down BEFORE exiting so no PoC row survives.
+    await dropScratchDb(db)
+    process.exit(exitCode)
+  })

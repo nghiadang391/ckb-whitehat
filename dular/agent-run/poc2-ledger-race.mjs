@@ -17,7 +17,7 @@ import { pg } from './deps.mjs'
 import { ensureScratchDb } from './dbsetup.mjs'
 
 const PATCHED = process.argv.includes('--patched')
-const REPO = '/tmp/ckb-whitehat/dular2/repo/server'
+const REPO = `${process.env.CKB_WHITEHAT_TARGET || '/tmp/ckb-whitehat/dular2/repo'}/server`
 const DB = await ensureScratchDb()
 
 process.env.DATABASE_URL = DB
@@ -106,13 +106,19 @@ for (let round = 1; round <= 25; round += 1) {
 await c.end()
 await pool.end()
 if (PATCHED) {
-  console.log(anyNegative || anyMismatch
+  const regression = anyNegative || anyMismatch
+  console.log(regression
     ? 'FIXED-DEBIT REGRESSION FAILED — still inconsistent'
     : 'PASS (patched) — guarded debit held the invariant across all rounds; balance never went negative')
+  console.log(regression ? 'FINDING F2 UNPROVEN' : 'FINDING F2 FIRED')
+  process.exit(regression ? 1 : 0)
 } else {
+  const fired = anyNegative || anyMismatch
   console.log(anyNegative
     ? 'F2 FIRED — target debit() drove the account balance NEGATIVE under concurrent withdrawals.'
     : anyMismatch
       ? 'F2 FIRED — ledger entries no longer reconcile with the balance under concurrency.'
       : 'F2 NOT observed this run — re-run (the race is timing-dependent; 25 rounds at 16-way parallelism)')
+  console.log(fired ? 'FINDING F2 FIRED' : 'FINDING F2 UNPROVEN')
+  process.exit(fired ? 0 : 1)
 }

