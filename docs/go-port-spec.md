@@ -18,6 +18,9 @@ semantics, and the `FINDING <id>` verdict-line checks.
 
 **Goals**
 - One static binary, stdlib-only (zero external Go modules): `ckb-whitehat`.
+- URL targets clone into managed disposable storage; dependency installation
+  is explicit opt-in via `--install-deps`, never an implicit lifecycle-script
+  execution.
 - Byte-for-byte compatible behavior with the Node CLI for every documented
   flag, env var, exit code, and console output contract.
 - One hash per platform to verify; no package-manager supply chain.
@@ -258,18 +261,79 @@ root README's "The CLI" section updated. `compare-runs.mjs`'s only
 non-subcommand reference (docs) is removed. Nothing else in the repo
 imports the Node CLI.
 
-## 8. Open items (decide at PR 3 time)
+## 8. Decisions (resolved with the user)
 
-- **O1** codex blanket-flag mapping (see §4.2) — verify against installed
-  codex, ship the per-agent table.
-- **O2** skill-embed vs home-dir precedence order as written in §4.3 —
-  confirm `go:embed` of `.claude/skills/…/SKILL.md` is acceptable, or
-  drop embed and require the skill copy (simpler, but a bare download
-  degrades to the "(skill file not found)" prompt fallback).
-- **O3** `install.sh` destination default (`$HOME/.local/bin` vs
-  `/usr/local/bin`).
+- **O1 (codex blanket flag)** — per-agent mapping table: `claude` →
+  `--dangerously-skip-permissions`; `codex` →
+  `--dangerously-bypass-approvals-and-sandbox`. Verify the codex spelling
+  against the user's installed binary at build time (spec item, not a
+  blocker — the checkpoint design below does not depend on it).
+- **O2 (skill location)** — user decision: like no-mistakes, **all logic
+  lives in the binary**. SKILL.md is embedded via `go:embed`; a bare
+  download works standalone. `$CKB_WHITEHAT_SKILL` remains as an
+  override. The `.md` in the repo is documentation/install artifact
+  only — the agent (guided by the embedded skill text) calls the
+  binary; the binary never parses .md.
+- **O3 (install.sh dest)** — `~/.local/bin`.
 
-## 9. What deliberately does NOT move
+## 9. URL targets: auto-clone into a managed directory
+
+`--target` accepts a URL in addition to a local path:
+
+- Detection: `http(s)://`, `git@`, `ssh://` → URL; otherwise a local
+  path (behavior identical to today).
+- Clone dir: `~/.ckb-whitehat/repos/<repo-slug>` (slug from the URL's
+  basename). Stable path ⇒ the existing workspace slug (keyed on the
+  resolved target path) stays stable; no workspace-keying change.
+- History: full clone by default (the skill diffs findings against a
+  baseline); `--depth N` opt-in. `--fresh` removes and re-clones.
+- Dependencies are **not installed by default**: package-manager lifecycle
+  scripts execute arbitrary target code. `--install-deps` explicitly opts in
+  (use `npm ci` when a lockfile exists, otherwise `npm install`); print a
+  loud warning. `--no-install` is accepted as an explicit no-op. The clone
+  is disposable tool-owned state, never the user's working tree.
+- `config.json` gains `target_origin` (`local`|`clone`), `clone_url`,
+  `commit` (HEAD sha at clone time); `status` prints them.
+- New subcommand `clean`: remove `~/.ckb-whitehat/repos/*`
+  (`--workspaces` extends to the slug workspaces).
+- Agent hard rules unchanged: target content is untrusted; `--add-dir`
+  points at the clone dir; the agent's cwd remains the workspace.
+
+## 10. Interactive gates (opt-in; unattended is the default)
+
+Today the tool never pauses: default allowlist + 300s stall-kill means
+a blocked prompt ends the run. Add no-mistakes-style **defined gates**
+via `run --interactive` (off by default — unattended output is
+byte-identical to today):
+
+- Hard constraint: the CLI only presents **its own** skill-defined
+  decision points, never free-form agent text — the target repo is
+  hostile content, and "the agent asked me something" is a
+  prompt-injection channel.
+- Gates: (1) **triage** — approve / add / drop / stop the hypothesis
+  list, rendered by the CLI; (2) **permission** — agent requests an
+  escalated tool (e.g. live `curl` probe): allow-once / deny;
+  (3) **publish** — before any outward-facing step, when added.
+- Mechanics: agent persists state to the workspace and ends the turn
+  with `CKB-WHITEHAT-GATE: <gate-id> …`; the CLI suspends the stall
+  timer, prompts on the TTY, records the answer in
+  `<ws>/decisions.json`, and resumes. Primary resume = **checkpoint
+  re-spawn** (fresh prompt + decisions + prior state; no dependency on
+  agent session semantics); optimization = `claude --resume <sid>`
+  where available.
+- CI / non-TTY: `--auto-skip-gates` (default policy **skip = deny** —
+  the safe answer).
+- The wall-clock kill still bounds everything outside an active gate.
+
+## 11. Remaining open items
+
+- Verify `claude -p --resume` / codex session support (checkpoint
+  re-spawn is the fallback, so nothing is blocked on it).
+- Codex blanket-flag spelling confirmed against the user's codex.
+- Clone depth default (spec says full; `--depth` overrides) and
+  `npm ci` vs `npm install` fallback order.
+
+## 12. What deliberately does NOT move
 
 - `.claude/skills/ckb-whitehat/SKILL.md` (the methodology; language-agnostic).
 - `dular/poc/`, `dular/agent-run/`, `tapfiber/poc/` and their FINDINGS.md
