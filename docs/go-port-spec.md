@@ -265,9 +265,9 @@ imports the Node CLI.
 
 - **O1 (codex blanket flag)** — per-agent mapping table: `claude` →
   `--dangerously-skip-permissions`; `codex` →
-  `--dangerously-bypass-approvals-and-sandbox`. Verify the codex spelling
-  against the user's installed binary at build time (spec item, not a
-  blocker — the checkpoint design below does not depend on it).
+  `--dangerously-bypass-approvals-and-sandbox`. **Verified against the
+  user's installed codex binary (confirmed working, 2026-11-17)**; the
+  checkpoint design does not depend on it either way.
 - **O2 (skill location)** — user decision: like no-mistakes, **all logic
   lives in the binary**. SKILL.md is embedded via `go:embed`; a bare
   download works standalone. `$CKB_WHITEHAT_SKILL` remains as an
