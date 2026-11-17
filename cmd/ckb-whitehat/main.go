@@ -204,8 +204,22 @@ func resolveOpts(a []string) workspace.ResolveOpts {
 }
 
 func allowedToolsList(a []string) []string {
+	// Node parity (flag() ?? env ?? default), where flag() returns:
+	//   the value        for `--allowed-tools Foo`  (Foo must not look like a flag)
+	//   true             for a bare `--allowed-tools` (next arg is a flag or absent)
+	//   the eq value     for `--allowed-tools=...` (empty value = allow nothing)
+	// and `raw === undefined || raw === true` -> default, else split the value.
+	for _, s := range a {
+		if strings.HasPrefix(s, "--allowed-tools=") {
+			return splitCSV(s[len("--allowed-tools="):])
+		}
+	}
 	if raw, ok := flagVal(a, "allowed-tools"); ok {
-		return splitCSV(raw)
+		if raw != "" {
+			return splitCSV(raw)
+		}
+		// bare flag (no usable value) -> keep the default list, like Node's `true`.
+		return defaultAllowedTools
 	}
 	if raw, ok := os.LookupEnv("CKB_WHITEHAT_ALLOWED_TOOLS"); ok {
 		return splitCSV(raw)
@@ -358,7 +372,8 @@ func runCmd(a []string) int {
 	}
 	ws, cfg, err := m.ReadConfig(local)
 	if err != nil {
-		die(fmt.Sprintf("no workspace for %s - run: ckb-whitehat init %s", spec, spec), 2)
+		// Node prints the resolved target path here; use local for parity.
+		die(fmt.Sprintf("no workspace for %s - run: ckb-whitehat init %s", local, local), 2)
 	}
 	// A cleaned or re-pointed clone re-resolves from its recorded origin.
 	if cfg.TargetOrigin == "clone" && cfg.CloneURL != "" {
@@ -412,7 +427,7 @@ func runCmd(a []string) int {
 	fmt.Printf("  workspace  : %s\n", ws)
 	logPath := filepath.Join(ws, "run.log")
 	fmt.Printf("  log        : %s\n", logPath)
-	fmt.Printf("  allow tools: %s\n", strings.Join(allowed, ","))
+	fmt.Printf("  allow tools: %s\n", strings.Join(allowed, ", "))
 	fmt.Printf("  stall limit: %ds   max runtime: %ds\n", int(stall.Seconds()), int(max.Seconds()))
 
 	// Checkpoint loop: the agent may end a round with a gate line; the human
@@ -509,7 +524,9 @@ func finishRun(res agent.Result, ws, logPath string, stall, max time.Duration) i
 	fmt.Println("\ncompleteness:")
 	for _, c := range checks {
 		if c.OK {
-			fmt.Printf("  ok     %s\n", c.What)
+			// Node parity: pad "ok" to 7 chars so both lines' `what` starts at
+			// the same column as the MISSING lines ("  " + 7 + " ").
+			fmt.Printf("  ok      %s\n", c.What)
 		} else {
 			fmt.Printf("  MISSING %s\n", c.What)
 		}
@@ -544,8 +561,11 @@ func finishRun(res agent.Result, ws, logPath string, stall, max time.Duration) i
 	return code
 }
 
+// tailLines matches Node exactly: split, take the last n lines, join — no
+// trailing-newline trim (Node's split leaves an empty final element when the
+// output ends in \n, and so does this).
 func tailLines(s string, n int) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	lines := strings.Split(s, "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
@@ -568,7 +588,8 @@ func statusCmd(a []string) int {
 	local := resolveLocal(m, targetFrom(a))
 	ws, cfg, err := m.ReadConfig(local)
 	if err != nil {
-		fmt.Println("no workspace for", targetFrom(a))
+		// Node prints the resolved target path here; local is that key.
+		fmt.Println("no workspace for", local)
 		return 1
 	}
 	svc := "(none detected)"
@@ -621,7 +642,8 @@ func compareCmd(a []string) int {
 				break
 			}
 		}
-		fmt.Printf("  %-5s %-58s <- %s\n", c.ID, padRunes(c.Title, 58), match)
+		// Node: `  ${id.padEnd(5)} ${title.slice(0,58).padEnd(58)} <- ${n.id}`
+		fmt.Printf("  %-5s %s <- %s\n", c.ID, padRunes(c.Title, 58), match)
 	}
 	fmt.Printf("\nMISSED by the new run (%d):\n", len(r.Missed))
 	for _, mf := range r.Missed {

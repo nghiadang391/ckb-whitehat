@@ -53,7 +53,7 @@ func Detect(ctx context.Context, opts Options) []string {
 	if fnnPorts == nil {
 		fnnPorts = []int{8227, 8327}
 	}
-	var out []string
+	out := []string{}
 	for _, port := range pgPorts {
 		b, err := run(ctx, "pg_isready", "-h", "127.0.0.1", "-p", strconv.Itoa(port))
 		if err == nil && bytes.Contains(b, []byte("accepting connections")) {

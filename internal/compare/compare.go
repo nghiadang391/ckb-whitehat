@@ -19,6 +19,7 @@ type Section struct {
 }
 
 var findingRE = regexp.MustCompile(`(?m)^#{2,3}\s+((?:F|S|C4)\d+(?:\.\d+)?)\s*[—-]\s*(.+)$`)
+var parenSuffixRE = regexp.MustCompile(`\s*\(.*\)$`)
 var required = []string{"## At a glance", "On-chain evidence", "Layer boundary", "Honest limitations"}
 
 func ParseFindings(md string) []Finding {
@@ -26,9 +27,10 @@ func ParseFindings(md string) []Finding {
 	out := make([]Finding, 0, len(matches))
 	for _, m := range matches {
 		title := strings.TrimSpace(m[2])
-		if i := strings.Index(title, "("); i >= 0 {
-			title = strings.TrimSpace(title[:i])
-		}
+		// Node parity: strip only a TRAILING "(...)" suffix ("forged callback
+		// (HIGH)" -> "forged callback"); a title ending in "— PROVEN" keeps its
+		// full text because the $-anchor requires the closing paren to end it.
+		title = parenSuffixRE.ReplaceAllString(title, "")
 		out = append(out, Finding{ID: m[1], Title: title})
 	}
 	return out

@@ -73,6 +73,28 @@ func TestPositionalsCollectsAll(t *testing.T) {
 	}
 }
 
+// Node parity: a bare --allowed-tools (present, no value) keeps the default
+// list; --allowed-tools= (empty value) allows nothing, like Node's
+// String("").split(",").filter(Boolean); an explicit value overrides.
+func TestAllowedToolsBareFlagKeepsDefault(t *testing.T) {
+	got := allowedToolsList([]string{"--allowed-tools"})
+	if len(got) != len(defaultAllowedTools) || got[0] != defaultAllowedTools[0] {
+		t.Fatalf("bare --allowed-tools must keep the default list, got %v", got)
+	}
+	if got := allowedToolsList([]string{"--allowed-tools=Bash(node:*)"}); len(got) != 1 || got[0] != "Bash(node:*)" {
+		t.Fatalf("explicit value must override, got %v", got)
+	}
+	if got := allowedToolsList([]string{"--allowed-tools="}); len(got) != 0 {
+		t.Fatalf("--allowed-tools= must allow nothing, got %v", got)
+	}
+	// space form: Node flag() returns the next single arg as the value, so
+	// the list is that one arg split on commas. The following arg is a
+	// separate positional, not a list member.
+	if got := allowedToolsList([]string{"--allowed-tools", "Bash(node:*),Read"}); len(got) != 2 || got[0] != "Bash(node:*)" || got[1] != "Read" {
+		t.Fatalf("space form must split the single value on commas, got %v", got)
+	}
+}
+
 func TestHasFlag(t *testing.T) {
 	if !hasFlag([]string{"--yolo"}, "yolo") || !hasFlag([]string{"--fresh"}, "fresh") {
 		t.Fatal("bare flag not detected")
@@ -217,7 +239,9 @@ echo "CKB-WHITEHAT-RESULT: findings=1 fired=1 report=$ws/FINDINGS.md"
 	if code != 1 {
 		t.Fatalf("run code=%d, want 1 (finding fired):\n%s", code, out)
 	}
-	for _, want := range []string{"ok     agent printed the CKB-WHITEHAT-RESULT: marker", "findings=1 fired=1"} {
+	// The marker check passed and the summary line is present. We don't assert
+	// the exact "ok" padding — the parity harness (test/parity) owns that.
+	for _, want := range []string{"agent printed the CKB-WHITEHAT-RESULT: marker", "findings=1 fired=1"} {
 		if !strContains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}

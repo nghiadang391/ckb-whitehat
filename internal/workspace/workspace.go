@@ -121,7 +121,7 @@ func (m Manager) ResolveTargetOpts(spec string, ro ResolveOpts) (string, Config,
 		if err != nil || !st.IsDir() {
 			return "", Config{}, fmt.Errorf("not a directory: %s", p)
 		}
-		return p, Config{Target: p, TargetOrigin: "local"}, nil
+		return p, Config{Target: p, TargetOrigin: "local", Services: []string{}}, nil
 	}
 	dir := m.RepoDir(spec)
 	if ro.Fresh {
@@ -149,7 +149,7 @@ func (m Manager) ResolveTargetOpts(spec string, ro ResolveOpts) (string, Config,
 	if err != nil {
 		return "", Config{}, err
 	}
-	cfg := Config{Target: dir, TargetOrigin: "clone", CloneURL: spec, Commit: strings.TrimSpace(string(commit))}
+	cfg := Config{Target: dir, TargetOrigin: "clone", CloneURL: spec, Commit: strings.TrimSpace(string(commit)), Services: []string{}}
 	if ro.Install {
 		if err := InstallDeps(dir); err != nil {
 			return "", Config{}, err
