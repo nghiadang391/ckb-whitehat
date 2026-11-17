@@ -58,9 +58,10 @@ money on-chain (the chain executed it faithfully); it is not a chain bug.
 ## 3. Method (per target)
 
 ```
-0.  Clone target to /tmp/ckb-whitehat/<name>/ (its own new empty dir).
-    PoC scripts live in a SIBLING dir /tmp/ckb-whitehat/<name>-poc/ and are
-    passed to node as arguments — never run from inside the cloned tree
+0.  Clone target to a neutral dir (e.g. /tmp/ckb-whitehat/<name>/ - its own
+    new empty dir). With the CLI, the workspace is `~/.ckb-whitehat/<slug>/`
+    (PoC scripts in `poc/`, report as `FINDINGS.md`, `run.log` alongside).
+    Either way: PoC scripts are NEVER run from inside the cloned tree
     (untrusted-content rule: an interpreter loads code from its own cwd).
 1.  Triage (AI-assisted): one pass over every security-relevant file. Map
     keygen/storage, amount parsing (BigInt vs Number/float), signing, the
@@ -106,7 +107,7 @@ money on-chain (the chain executed it faithfully); it is not a chain bug.
 - **Never mask a query error as an empty result.** `.catch(() => [])` turned a
   gateway "Invalid request" into "0 cells" and we wrongly concluded the asset
   didn't exist. Distinguish *error* from *empty*; on error, switch the read
-  path (e.g. `get_transaction`/`list_cells` over a flaky indexer).
+  path (e.g. `get_transaction`/`get_cells` over a flaky indexer).
 - **Confirm the target's exact chain/testnet before funding anything.** Funding
   an asset on a testnet the target's nodes don't watch wastes the whole path.
   One source grep (the target's RPC URL / explorer link) is cheaper than a
@@ -155,21 +156,29 @@ money on-chain (the chain executed it faithfully); it is not a chain bug.
   say so in the report.
 
 ### Domain cheatsheet: CKB + Fiber (only what actually costs tokens to rediscover)
-- **Testnets:** `testnet.ckb.dev` ≡ `testnet.ckbapp.dev` (Lina/Puce) — the
-  *same* chain behind two gateways; `pudge.explorer.nervos.org` is that
-  explorer. The **Pudge faucet** settles on a *different* testnet than Lina —
-  a Pudge claim never appears where Lina-watching nodes look.
+- **Testnets:** `testnet.ckb.dev` ≡ `testnet.ckbapp.dev` are two gateways onto
+  the *same* chain; the explorer for it is `puce.explorer.nervos.org`, and
+  "Pudge" is that chain's **faucet** (Puce) — not a separate chain. The CKB
+  testnet generations are Aggron → Lina → Puce → Meepo; **Lina and Puce are
+  testnets, not mainnet** (mainnet is plain "CKB", explorer `explorer.nervos.org`).
+  A Pudge claim never appears where a node watching a *different* generation looks.
 - **Outpoint:** `funding_tx_hash (64 hex) ‖ index (8 hex)`. A channel's
   `channel_outpoint` first-64-hex is its funding tx. Derive the funding tx from
   the outpoint (FNN 0.9.1 `list_channels` does **not** return
   `funding_tx_hash`).
-- **UDT amount:** lives in the cell's `data`, last 32 bytes, big-endian u128.
-  1 RUSD = 100 000 000 base units.
+- **UDT amount:** in a standard CKB sUDT cell, `data` is the **first 16 bytes
+  (32 hex chars) as a little-endian u128** — `0x00ca9a3b0000…` is 1,000,000,000
+  base units (the byte order flips the value). 1 RUSD = 100 000 000 base units.
+  Note **Fiber channels do not read this field**: Fiber tracks a channel's
+  RUSD balance over RPC (`list_channels` → `local_balance`/`remote_balance`)
+  and sends amounts as `amount: hex(baseUnits)` + `udt_type_script`. Reach for
+  cell `data` only when reading an on-chain sUDT cell directly.
 - **Channel state machine:** NegotiatingFunding → AwaitingTxSignatures (funding
-  tx signed, awaiting broadcast+confirm) → AwaitingChannelReady (tx in pool) →
-  ChannelReady (confirmed). Stuck at AwaitingTxSignatures = the funding tx is
-  still pending on-chain; B sits one step ahead at AwaitingChannelReady.
-- **UDD channel funding:** RUSD must come from cells under the node's
+  tx signed, awaiting the peer's signature + broadcast) → AwaitingChannelReady
+  (tx broadcast, awaiting on-chain confirmation) → ChannelReady (confirmed).
+  Both peers sit in AwaitingChannelReady while the funding tx confirms;
+  AwaitingTxSignatures means the funding tx is not yet broadcast.
+- **UDT channel funding:** RUSD must come from cells under the node's
   secp256k1-blake160 ckb-account lock; CKB capacity alone cannot fund a UDT
   channel.
 - **Payment idempotency:** FNN keeps one payment session per invoice; a
@@ -177,8 +186,9 @@ money on-chain (the chain executed it faithfully); it is not a chain bug.
   already exists."
 - **Gateway RPC reality:** `get_transaction` works; `get_transaction_status` →
   "Method not found"; `send_transaction` → 403 (read-only gateways). Use
-  `get_transaction` + `list_cells` as the reliable read path; the REST indexer
-  is flaky.
+  `get_transaction` + `get_cells` as the reliable read path; the REST indexer
+  is flaky. When scanning for a UDT cell, **filter by the RUSD type script** —
+  any cell with non-empty `output_data` is not your UDT.
 
 **Deeper reference (fetch only when a specific question needs it, don't ingest
 upfront):** CKB — https://docs.nervos.org/ · Fiber — https://www.fiber.world/docs
