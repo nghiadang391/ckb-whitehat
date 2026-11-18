@@ -1,0 +1,127 @@
+#!/bin/sh
+# fake "claude" agent for the Node <-> Go parity harness.
+#
+# Invoked by both CLIs as:
+#   claude -p --allowedTools ... --permission-mode acceptEdits --add-dir <t> --output-format text <prompt>
+#
+# The prompt is ALWAYS the last argument; every preceding argument is a
+# single-line flag token. So we record:
+#   agent-flags.txt - every arg except the last, one per line (byte-exact)
+#   agent-prompt.txt- the last arg, raw bytes
+#   agent-env.txt    - the CKB_WHITEHAT_* env vars, sorted
+# so the harness can byte-diff exactly what each CLI handed to the agent.
+#
+# Behavior switches on $FAKE_MODE:
+#   fire   - writes a fired finding + PoC + report, prints verdict + marker, exit 0
+#   clean  - writes a clean report, prints a zero marker, exit 0
+#   fail   - prints an error to stderr, exit 3
+#   silent - prints nothing, writes nothing, exit 0
+#   stall  - sleeps (the harness kills it via --stall-timeout)
+#   chatty - prints a tick every 0.2s for ~4s, then behaves like fire
+set -u
+ws="$CKB_WHITEHAT_WORKSPACE"
+[ -n "$ws" ] || exit 1
+mkdir -p "$ws"
+
+# argv capture: every arg except the last is a single-line flag token; the
+# last arg is the (possibly multi-line) prompt. POSIX-safe (no array slicing).
+n=$#
+i=0
+: > "$ws/agent-flags.txt"
+for a in "$@"; do
+  i=$((i + 1))
+  if [ "$i" -eq "$n" ]; then
+    printf '%s' "$a" > "$ws/agent-prompt.txt"
+  else
+    printf '%s\n' "$a" >> "$ws/agent-flags.txt"
+  fi
+done
+env | grep '^CKB_WHITEHAT_' | sort > "$ws/agent-env.txt"
+
+mode="${FAKE_MODE:-fire}"
+
+write_fired_report() {
+  mkdir -p "$ws/poc"
+  printf 'console.log(1)\n' > "$ws/poc/f1.js"
+  cat > "$ws/FINDINGS.md" <<'EOF'
+# ckb-whitehat — fake
+Target: fake repo. No network, no live service; vendors stubbed.
+
+## At a glance
+| # | Finding | Sev | Status |
+|---|---|---|---|
+| **F1** | forged callback | HIGH | PROVEN (fired) |
+
+## F1 — forged callback (HIGH) — PROVEN
+PoC output:
+FINDING F1 FIRED
+Impact: ledger credit with zero vendor calls.
+Patch: verify the callback signature against the provider.
+
+## On-chain evidence
+N/A — no on-chain interaction.
+
+## Layer boundary
+we tested the app, not the chain.
+
+## Honest limitations
+- single PoC class exercised
+EOF
+}
+
+case "$mode" in
+fire)
+  write_fired_report
+  echo "FINDING F1 FIRED"
+  echo "CKB-WHITEHAT-RESULT: findings=1 fired=1 report=$ws/FINDINGS.md"
+  ;;
+clean)
+  cat > "$ws/FINDINGS.md" <<'EOF'
+# ckb-whitehat — fake-clean
+Target: fake repo (local). No network, no live service, vendors stubbed.
+
+## At a glance
+No findings. Triage covered keygen/storage, amount parsing, signing, the
+network/vendor trust boundary, the balance/ledger, and secrets-in-config;
+none produced a hypothesis with a deterministic offline PoC that terminates
+in observable state. All money invariants held under the fuzz corpus.
+
+## On-chain evidence
+N/A — target has no on-chain/persistent-asset interaction.
+
+## Layer boundary
+we tested how the target uses the chain, not the chain protocol itself.
+
+## Honest limitations
+- static-only pass: no PoC was needed, so no exploit was executed
+- fuzz corpus was small; a larger corpus might surface edge-case parsing bugs
+EOF
+  echo "CKB-WHITEHAT-RESULT: findings=0 fired=0 report=$ws/FINDINGS.md"
+  ;;
+fail)
+  echo "fake agent: simulated crash" >&2
+  exit 3
+  ;;
+silent)
+  exit 0
+  ;;
+stall)
+  sleep 30
+  ;;
+chatty)
+  i=0
+  while [ "$i" -lt 20 ]; do
+    echo "tick $i"
+    i=$((i + 1))
+    sleep 0.2
+  done
+  write_fired_report
+  echo "FINDING F1 FIRED"
+  echo "CKB-WHITEHAT-RESULT: findings=1 fired=1 report=$ws/FINDINGS.md"
+  ;;
+*)
+  echo "fake-claude: unknown FAKE_MODE: $mode" >&2
+  exit 64
+  ;;
+esac
+exit 0
