@@ -255,11 +255,13 @@ with fake/real agents and `diff` the stdout, exit codes, `run.log`,
 tests, release workflow, `install.sh`; `cli/` (Node) still present.
 README documents both, Go marked the recommended path.
 
-**PR 4 — "Go-only"**: delete `cli/` (both `.mjs` files, `package.json`,
-the `npm link` instructions), README install section becomes Go-only,
-root README's "The CLI" section updated. `compare-runs.mjs`'s only
-non-subcommand reference (docs) is removed. Nothing else in the repo
-imports the Node CLI.
+**PR 4 — "Go-only" — DONE (direct to main, 2026-11-18)**: `cli/` deleted
+(both `.mjs` files, `package.json`, the `npm link` instructions); the one-off
+Node↔Go parity harness (`test/parity/`) and its CI job were retired with it —
+their baseline (the Node CLI) is gone, and it passed before deletion (spec §5).
+README "The CLI" section is Go-only (`install.sh` / release download /
+`go build`). `compare-runs.mjs`'s only non-subcommand references (docs, the
+parity harness) are removed. Nothing else in the repo imports the Node CLI.
 
 ## 8. Decisions (resolved with the user)
 

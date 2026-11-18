@@ -37,18 +37,36 @@ lane, not a hard requirement.
 
 ## The CLI
 
-A terminal front-end for the same method, in the spirit of `no-mistakes`:
+A single static Go binary — no Node, no npm, no package-manager supply
+chain; one hash per platform to verify. The skill text is embedded in the
+binary, so a bare download works standalone.
+
+Install (Linux / macOS, amd64 / arm64):
 
 ```sh
-cd cli && npm link
-ckb-whitehat init ~/src/target-repo --scope app,chain
-ckb-whitehat run --target ~/src/target-repo
+curl -fsSL https://raw.githubusercontent.com/nghiadang391/ckb-whitehat/main/install.sh | sh
+# -> $HOME/.local/bin/ckb-whitehat
 ```
 
-It drives your local agent CLI (`claude -p`) through the challenge and writes
-`FINDINGS.md` to a workspace outside the target repo. Like no-mistakes, it
-**never asks for an API key** — the agent binary carries its own auth. See
-[cli/README.md](cli/README.md).
+or build from source:
+
+```sh
+go build -o ckb-whitehat ./cmd/ckb-whitehat
+```
+
+Use it:
+
+```sh
+ckb-whitehat init ~/src/target-repo --scope app,chain
+ckb-whitehat run --target ~/src/target-repo
+ckb-whitehat report --target ~/src/target-repo
+ckb-whitehat compare new-report.md baseline-report.md
+```
+
+It drives your local agent CLI (`claude -p` or `codex exec`) through the
+challenge and writes `FINDINGS.md` to a workspace outside the target repo.
+Like no-mistakes, it **never asks for an API key** — the agent binary
+carries its own auth.
 
 ## Dular
 

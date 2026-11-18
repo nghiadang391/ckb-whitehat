@@ -240,7 +240,8 @@ echo "CKB-WHITEHAT-RESULT: findings=1 fired=1 report=$ws/FINDINGS.md"
 		t.Fatalf("run code=%d, want 1 (finding fired):\n%s", code, out)
 	}
 	// The marker check passed and the summary line is present. We don't assert
-	// the exact "ok" padding — the parity harness (test/parity) owns that.
+	// the exact "ok" padding is a display detail; the marker and summary
+	// lines are the behavioral contract.
 	for _, want := range []string{"agent printed the CKB-WHITEHAT-RESULT: marker", "findings=1 fired=1"} {
 		if !strContains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
