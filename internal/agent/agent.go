@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -116,9 +114,7 @@ func Spawn(ctx context.Context, s Spec, argv []string, env []string, cwd string,
 	defer cancel()
 	cmd := exec.CommandContext(cctx, s.Bin, argv...)
 	cmd.Dir, cmd.Env = cwd, env
-	if runtime.GOOS != "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	}
+	setProcAttr(cmd)
 	var out, errbuf bytes.Buffer
 	var mu sync.Mutex
 	last := time.Now()
@@ -151,29 +147,19 @@ func Spawn(ctx context.Context, s Spec, argv []string, env []string, cwd string,
 			return Result{Code: code, Stdout: out.String(), Stderr: errbuf.String()}, nil
 		case <-tick.C:
 			if outF.idle() > stall {
-				kill(cmd)
+				killProcess(cmd)
 				return Result{Code: 1, Stdout: out.String(), Stderr: errbuf.String(), Stalled: true}, nil
 			}
 			if time.Since(started) > max {
-				kill(cmd)
+				killProcess(cmd)
 				return Result{Code: 1, Stdout: out.String(), Stderr: errbuf.String(), TimedOut: true}, nil
 			}
 		case <-deadline.C:
-			kill(cmd)
+			killProcess(cmd)
 			return Result{Code: 1, Stdout: out.String(), Stderr: errbuf.String(), TimedOut: true}, nil
 		case <-cctx.Done():
-			kill(cmd)
+			killProcess(cmd)
 			return Result{Code: 1, Stdout: out.String(), Stderr: errbuf.String()}, cctx.Err()
 		}
 	}
-}
-
-func kill(cmd *exec.Cmd) {
-	if cmd.Process == nil {
-		return
-	}
-	if runtime.GOOS != "windows" {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	_ = cmd.Process.Kill()
 }
