@@ -1,7 +1,8 @@
 # ckb-whitehat — Go CLI port spec
 
-Status: **spec, not yet implemented.** End state: the CLI is a single static
-Go binary; the Node CLI (`cli/bin/*.mjs`, `cli/package.json`) is **deleted**.
+Status: **shipped.** End state reached: the CLI is a single static
+Go binary; the Node CLI (`cli/bin/*.mjs`, `cli/package.json`) is
+**deleted** (direct to main, 2026-11-18).
 The PoC suites (`dular/poc/`, `dular/agent-run/`, `tapfiber/poc/`) are
 untouched — they're agent-produced artifacts that run under Node because the
 *targets* are Node apps; the tool itself no longer requires Node.

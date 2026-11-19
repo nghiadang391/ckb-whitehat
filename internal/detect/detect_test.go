@@ -39,6 +39,27 @@ func TestDetectServices(t *testing.T) {
 	}
 }
 
+func TestNodeVersionReportsPresence(t *testing.T) {
+	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "node" {
+			return []byte("v20.11.0\n"), nil
+		}
+		return nil, fmt.Errorf("absent")
+	}
+	if got := NodeVersion(context.Background(), Options{RunCommand: run}); got != "v20.11.0" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestNodeVersionMissingIsEmpty(t *testing.T) {
+	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("exec: not found")
+	}
+	if got := NodeVersion(context.Background(), Options{RunCommand: run}); got != "" {
+		t.Fatalf("want empty, got %q", got)
+	}
+}
+
 func TestProbeRejectsMalformedAndHTTPError(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

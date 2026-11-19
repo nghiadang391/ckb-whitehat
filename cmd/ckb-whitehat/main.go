@@ -271,7 +271,41 @@ func initCmd(a []string) int {
 	}
 	fmt.Printf("  scope  : %s%s\n", strings.Join(cfg.Scope, ", "), suffix)
 	fmt.Printf("  next   : ckb-whitehat run --target %s\n", cfg.Target)
+	printPrerequisites(cfg)
 	return 0
+}
+
+// printPrerequisites tells the user which local pieces exist and which are
+// missing, per the scope they just initialized. Informational, never
+// blocking: init succeeds either way, but a chain-scope init without FNN
+// nodes is a loud warning because that run cannot produce on-chain evidence.
+func printPrerequisites(cfg workspace.Config) {
+	ctx := context.Background()
+	node := detect.NodeVersion(ctx, detect.Options{})
+	lines := detect.Detect(ctx, detect.Options{})
+	fnnUp := false
+	for _, l := range lines {
+		if strings.Contains(l, "Fiber (FNN) node is running") {
+			fnnUp = true
+			break
+		}
+	}
+
+	fmt.Println("\nprerequisites:")
+	if node != "" {
+		fmt.Printf("  ok        node %s (PoCs are agent-written and run under Node)\n", node)
+	} else {
+		fmt.Println("  missing   node - agent-written PoCs cannot run; install Node 18+ and re-init")
+	}
+	if cfg.Onchain {
+		if fnnUp {
+			fmt.Println("  ok        Fiber (FNN) node detected (on-chain evidence layer is ready)")
+		} else {
+			fmt.Println("  warning   chain scope selected but no Fiber (FNN) node is reachable")
+			fmt.Println("            on 127.0.0.1:8227/8327/8386/8387. Start your 2-node testnet stack")
+			fmt.Println("            first, or drop the chain scope - this run cannot produce on-chain evidence.")
+		}
+	}
 }
 
 // --- run --------------------------------------------------------------------

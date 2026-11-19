@@ -68,6 +68,22 @@ challenge and writes `FINDINGS.md` to a workspace outside the target repo.
 Like no-mistakes, it **never asks for an API key** — the agent binary
 carries its own auth.
 
+### Prerequisites
+
+The binary itself is self-contained, but a run needs local tooling:
+
+| Piece | Needed for | Without it |
+|---|---|---|
+| An agent CLI on PATH (`claude` or `codex`) | every run | the run fails before starting; `run` names the missing binary |
+| **Node** (18+) | running the agent-written PoCs (targets are Node apps) | PoCs cannot execute; static findings only |
+| A scratch **Postgres** | DB-backed PoCs (ledger, callback, race classes) | those findings report "DB unavailable" in FINDINGS.md instead of firing |
+| Two **Fiber (FNN) nodes** on a public testnet + our own addresses | the on-chain evidence layer (`--scope chain` / `--chain`) only | the run degrades to app-scope; on-chain section is N/A |
+
+`init` checks what it can (node version, FNN node `node_info` on the
+well-known local ports, Postgres via `pg_isready`) and prints a
+`prerequisites:` block so you know before the run which layers will work.
+It is informational, never blocking — init succeeds either way.
+
 ## Dular
 
 - `dular/poc/f1…f8f9-*.mjs` — offline PoCs, each a one-command run against

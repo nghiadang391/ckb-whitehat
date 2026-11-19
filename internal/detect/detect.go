@@ -51,7 +51,9 @@ func Detect(ctx context.Context, opts Options) []string {
 	}
 	fnnPorts := opts.FNNPorts
 	if fnnPorts == nil {
-		fnnPorts = []int{8227, 8327}
+		// 8227/8327 are the classic 2-node setup ports; 8386/8387 are the
+		// alternate pair our own testnet stacks use.
+		fnnPorts = []int{8227, 8327, 8386, 8387}
 	}
 	out := []string{}
 	for _, port := range pgPorts {
@@ -105,6 +107,22 @@ type rpcResponseResult struct {
 func defaultCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	return cmd.Output()
+}
+
+// NodeVersion returns the `node --version` output (e.g. "v20.11.0"), or ""
+// when node is not on PATH. Target PoCs are agent-written and run under
+// Node, so init reports whether the prerequisite is present. It honors
+// Options.RunCommand so tests can stub it.
+func NodeVersion(ctx context.Context, opts Options) string {
+	run := opts.RunCommand
+	if run == nil {
+		run = defaultCommand
+	}
+	b, err := run(ctx, "node", "--version")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // FormatServices turns detected entries into the prompt block used by the
