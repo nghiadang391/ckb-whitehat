@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -26,6 +27,81 @@ func TestEnv(t *testing.T) {
 	got := Env([]string{"A=B"}, "/w", "/t")
 	if len(got) != 3 || got[1] != "CKB_WHITEHAT_WORKSPACE=/w" {
 		t.Fatal(got)
+	}
+}
+
+// TestSpawnObserverReceivesLinesInOrder: the observer sees stdout lines as
+// they are emitted, in order, with newlines stripped.
+func TestSpawnObserverReceivesLinesInOrder(t *testing.T) {
+	s := Spec{Name: "sh", Bin: "/bin/sh", Base: []string{"-c"}}
+	var mu sync.Mutex
+	var lines []string
+	res, err := SpawnWithObserver(context.Background(), s,
+		[]string{"-c", "echo a-line; sleep 0.1; echo b-line; sleep 0.1; echo c-line"}, nil, ".",
+		60*time.Second, 60*time.Second,
+		func(line string) {
+			mu.Lock()
+			lines = append(lines, line)
+			mu.Unlock()
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Code != 0 {
+		t.Fatalf("want exit 0, got %+v", res)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"a-line", "b-line", "c-line"}
+	if len(lines) != len(want) {
+		t.Fatalf("got %d lines, want %d: %#v", len(lines), len(want), lines)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Fatalf("line %d = %q, want %q (all: %#v)", i, lines[i], want[i], lines)
+		}
+	}
+}
+
+// TestSpawnNoObserverUnchanged: Spawn (nil observer) still returns the full
+// captured stdout and exit code.
+func TestSpawnNoObserverUnchanged(t *testing.T) {
+	s := Spec{Name: "sh", Bin: "/bin/sh", Base: []string{"-c"}}
+	res, err := Spawn(context.Background(), s,
+		[]string{"-c", "echo plain"}, nil, ".",
+		60*time.Second, 60*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Code != 0 || res.Stdout != "plain\n" || res.Stalled || res.TimedOut {
+		t.Fatalf("want unchanged Spawn result {Code:0 Stdout:plain\n}, got %+v", res)
+	}
+}
+
+// TestSpawnObserverFlushTrailingLine: a final line without a newline is
+// still delivered to the observer after the child exits.
+func TestSpawnObserverFlushTrailingLine(t *testing.T) {
+	s := Spec{Name: "sh", Bin: "/bin/sh", Base: []string{"-c"}}
+	var mu sync.Mutex
+	var lines []string
+	observe := func(line string) {
+		mu.Lock()
+		lines = append(lines, line)
+		mu.Unlock()
+	}
+	res, err := SpawnWithObserver(context.Background(), s,
+		[]string{"-c", "printf 'tail-no-newline'"}, nil, ".",
+		60*time.Second, 60*time.Second, observe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Code != 0 {
+		t.Fatalf("want exit 0, got %+v", res)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lines) != 1 || lines[0] != "tail-no-newline" {
+		t.Fatalf("want %#v, got %#v", []string{"tail-no-newline"}, lines)
 	}
 }
 

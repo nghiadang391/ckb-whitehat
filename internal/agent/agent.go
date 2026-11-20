@@ -85,18 +85,46 @@ func Env(base []string, workspace, target string) []string {
 
 // feeder captures an agent's output stream and records when the last byte
 // arrived, so the stall timer resets on any output (a chatty agent must not
-// be killed just because it keeps printing).
+// be killed just because it keeps printing). The stdout feeder additionally
+// hands every completed stdout line to onLine, calling it while holding the
+// mutex; onLine must be a short, non-blocking state update.
 type feeder struct {
 	mu      *sync.Mutex
 	last    *time.Time
 	storage *bytes.Buffer
+	onLine  func(string)
+	pending []byte
 }
 
 func (f *feeder) Write(p []byte) (int, error) {
 	f.mu.Lock()
 	*f.last = time.Now()
+	n, err := f.storage.Write(p)
+	if f.onLine != nil {
+		f.pending = append(f.pending, p...)
+		for {
+			i := bytes.IndexByte(f.pending, '\n')
+			if i < 0 {
+				break
+			}
+			f.onLine(string(f.pending[:i]))
+			f.pending = f.pending[i+1:]
+		}
+	}
+	f.mu.Unlock()
+	return n, err
+}
+
+// flushTail delivers any trailing line that never received a newline, so a
+// final line without a newline still reaches the observer.
+func (f *feeder) flushTail() {
+	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.storage.Write(p)
+	if f.onLine == nil || len(f.pending) == 0 {
+		return
+	}
+	f.onLine(string(f.pending))
+	f.pending = nil
 }
 
 // idle returns seconds since the last output byte.
@@ -106,7 +134,20 @@ func (f *feeder) idle() time.Duration {
 	return time.Since(*f.last)
 }
 
+// Spawn is SpawnWithObserver with no observer.
 func Spawn(ctx context.Context, s Spec, argv []string, env []string, cwd string, stall, max time.Duration) (Result, error) {
+	return SpawnWithObserver(ctx, s, argv, env, cwd, stall, max, nil)
+}
+
+// SpawnWithObserver is Spawn with an optional per-line observer on the
+// agent's stdout. onLine is invoked once per completed line (newline
+// stripped), in emission order, as the agent emits it. It must be
+// non-blocking (record state, never wait) and may assume the feeder mutex
+// is held while it runs, so keep it a short state update. Passing nil
+// disables observation; nil onLine => behavior identical to Spawn.
+// Any trailing partial line is delivered as one final onLine call after
+// the child exits, so slow last-line output still reaches the observer.
+func SpawnWithObserver(ctx context.Context, s Spec, argv []string, env []string, cwd string, stall, max time.Duration, onLine func(string)) (Result, error) {
 	if len(argv) == 0 {
 		return Result{}, errors.New("empty agent args")
 	}
@@ -118,7 +159,7 @@ func Spawn(ctx context.Context, s Spec, argv []string, env []string, cwd string,
 	var out, errbuf bytes.Buffer
 	var mu sync.Mutex
 	last := time.Now()
-	outF, errF := &feeder{&mu, &last, &out}, &feeder{&mu, &last, &errbuf}
+	outF, errF := &feeder{mu: &mu, last: &last, storage: &out, onLine: onLine}, &feeder{mu: &mu, last: &last, storage: &errbuf}
 	cmd.Stdout, cmd.Stderr = outF, errF
 	if err := cmd.Start(); err != nil {
 		return Result{}, err
@@ -144,6 +185,7 @@ func Spawn(ctx context.Context, s Spec, argv []string, env []string, cwd string,
 					code = 1
 				}
 			}
+			outF.flushTail()
 			return Result{Code: code, Stdout: out.String(), Stderr: errbuf.String()}, nil
 		case <-tick.C:
 			if outF.idle() > stall {

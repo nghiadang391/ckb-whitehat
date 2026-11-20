@@ -472,14 +472,66 @@ func runCmd(a []string) int {
 	// decides, we record it, and re-spawn with the decision (checkpoint
 	// re-spawn — no dependency on agent session semantics). A round with no
 	// gate is terminal.
+	//
+	// On a TTY we paint a live panel (spinner + stage + last-output line)
+	// while the agent runs, so a long run visibly shows "running, not
+	// stuck"; on the gate checkpoint we show a question box and read one
+	// key. When stdout is not a TTY (CI, pipes, tests) this whole branch is
+	// off and the plain-text path stays byte-identical.
 	decisions := store.Decisions
 	var lastRes agent.Result
 	gatedExhausted := false
+	// The panel and its ticker only exist when stdout is a terminal.
+	panelActive := IsTerminal()
+	var panel *LivePanel
+	var ticker *time.Ticker
+	var stopTick func()
+	if panelActive {
+		panel = NewLivePanel(fmt.Sprintf("running %s against %s", agentSpec.Name, cfg.Target), maxGateRounds)
+		ticker = time.NewTicker(100 * time.Millisecond)
+		stopTick = func() {
+			ticker.Stop()
+			// stopTick is called from the main goroutine after Spawn returns;
+			// the repaint goroutine may have just written a frame, so clear it.
+			os.Stdout.WriteString(panel.Teardown())
+			fmt.Print("\x1b[?25h") // show cursor again
+		}
+	}
+	startPanel := func() {
+		if panelActive {
+			panel.Restart()
+			// paint: clear the previously rendered panel, hide cursor, draw.
+			os.Stdout.WriteString(panel.Teardown())
+			fmt.Print("\x1b[?25l")
+			_, _ = os.Stdout.WriteString(panel.Render())
+		}
+	}
 	for round := 0; round < maxGateRounds; round++ {
+		if panelActive {
+			panel.SetRound(round + 1)
+			startPanel()
+			// Repaint the panel on a timer while the agent runs. Each frame
+			// first clears the previous frame (Teardown erases exactly what
+			// the last Render painted), then draws the new one; the observer
+			// goroutine feeds new lines into the panel concurrently.
+			go func() {
+				for range ticker.C {
+					_, _ = os.Stdout.WriteString(panel.Teardown() + panel.Render())
+				}
+			}()
+		}
 		prompt := buildPrompt(ws, cfg, interactive, decisions)
 		argv := agent.Args(agentSpec, allowed, skip, cfg.Target, prompt)
 		env := agent.Env(os.Environ(), ws, cfg.Target)
-		res, err := agent.Spawn(ctx, agentSpec, argv, env, ws, stall, max)
+		observer := func(line string) {}
+		if panelActive {
+			observer = panel.OnLine
+		}
+		res, err := agent.SpawnWithObserver(ctx, agentSpec, argv, env, ws, stall, max, observer)
+		if panelActive {
+			// Stop the repaint and tear down the panel.
+			stopTick()
+		}
 		if err != nil {
 			die(err.Error(), 1)
 		}
@@ -490,12 +542,20 @@ func runCmd(a []string) int {
 			content += "\n--- stderr ---\n" + res.Stderr
 		}
 		_ = os.WriteFile(logPath, []byte(content), 0644)
-		if strings.TrimSpace(res.Stdout) != "" {
+		// The 40-line tail only shows when the panel is off; on a TTY the
+		// user already watched the output live, and run.log has the record.
+		if !panelActive && strings.TrimSpace(res.Stdout) != "" {
 			fmt.Println(tailLines(res.Stdout, 40))
 		}
 
 		if g := lastGate(res.Stdout); g != nil && !res.Stalled && !res.TimedOut {
-			d, err := resolveGate(store, g, interactive)
+			var d gates.Decision
+			var err error
+			if panelActive && interactive {
+				d, err = resolveGatePanel(store, panel, g)
+			} else {
+				d, err = resolveGate(store, g, interactive)
+			}
 			if err != nil {
 				die(err.Error(), 1)
 			}
@@ -514,6 +574,36 @@ func runCmd(a []string) int {
 		fmt.Fprintf(os.Stderr, "checkpoint rounds exhausted (%d); finishing with the last round's output\n", maxGateRounds)
 	}
 	return finishRun(lastRes, ws, logPath, stall, max)
+}
+
+// resolveGatePanel resolves a gate checkpoint when the live panel is active
+// on a TTY: it paints the question box, reads a single key, and records the
+// decision. Falls back to the plain non-interactive resolveGate when no key
+// arrives (e.g. Ctrl-C, EOF, or a non-letter key), which safely denies.
+func resolveGatePanel(store *gates.Store, p *LivePanel, g *gates.Gate) (gates.Decision, error) {
+	os.Stdout.WriteString(p.Question(g.ID, g.Details))
+	key, err := ReadSingleKey()
+	if err != nil {
+		return resolveGate(store, g, false)
+	}
+	var choice string
+	switch key {
+	case 'a':
+		choice = "approve"
+	case 's':
+		choice = "skip"
+	case 'd':
+		choice = "deny"
+	case 'x':
+		choice = "stop"
+	default:
+		choice = "deny"
+	}
+	d := gates.Decision{GateID: g.ID, Choice: choice, Timestamp: time.Now().UTC()}
+	if err := store.Add(d); err != nil {
+		return d, err
+	}
+	return d, nil
 }
 
 // lastGate returns the most recent gate line in the agent output.
