@@ -26,7 +26,9 @@ import (
 	"github.com/nghiadang391/ckb-whitehat/internal/workspace"
 )
 
-const version = "0.1.0"
+// version is stamped from the release tag by .github/workflows/release.yml.
+// Local development builds intentionally report "dev".
+var version = "dev"
 
 // Default allowlist: offline PoC execution only.
 // Deliberately NOT included: curl (a hostile README could steer the agent into
@@ -148,6 +150,8 @@ func main() {
 		} else {
 			fmt.Println("cleaned managed clones")
 		}
+	case "update":
+		os.Exit(updateCmd(argv[1:]))
 	case "version", "--version":
 		fmt.Println(version)
 	case "help", "--help", "":
@@ -736,6 +740,7 @@ Commands:
   report [--target DIR]      print FINDINGS.md
   compare NEW.md BASE.md     compare a fresh report against a baseline
   clean [--workspaces]       remove managed clones (and optionally workspaces)
+  update [VERSION] [--check] self-update from GitHub Releases (sha256-verified)
   version | help
 
 Flags:

@@ -46,11 +46,17 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
+          EVENT_TAG: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
+          tag="$EVENT_TAG"
+          if [ -z "$tag" ] || [ "$tag" = main ] || [ "$tag" = master ]; then tag="$INPUT_TAG"; fi
+          if [ -z "$tag" ]; then tag="dev"; fi
+          tag="${tag#v}"
           ext=""
           if [ "$GOOS" = windows ]; then ext=.exe; fi
           mkdir -p dist
-          go build -trimpath -ldflags='-s -w' -o "dist/ckb-whitehat-${GOOS}-${GOARCH}${ext}" ./cmd/ckb-whitehat
+          go build -trimpath -ldflags="-s -w -X main.version=$tag" -o "dist/ckb-whitehat-${GOOS}-${GOARCH}${ext}" ./cmd/ckb-whitehat
       - uses: actions/upload-artifact@v4
         with:
           name: ckb-whitehat-${{ matrix.goos }}-${{ matrix.goarch }}
