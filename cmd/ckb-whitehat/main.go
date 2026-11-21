@@ -481,42 +481,37 @@ func runCmd(a []string) int {
 	decisions := store.Decisions
 	var lastRes agent.Result
 	gatedExhausted := false
-	// The panel and its ticker only exist when stdout is a terminal.
+	// The live panel and its repaint timer exist only when stdout is a
+	// terminal; piped/redirected output stays byte-identical to the plain path.
 	panelActive := IsTerminal()
 	var panel *LivePanel
-	var ticker *time.Ticker
-	var stopTick func()
 	if panelActive {
 		panel = NewLivePanel(fmt.Sprintf("running %s against %s", agentSpec.Name, cfg.Target), maxGateRounds)
-		ticker = time.NewTicker(100 * time.Millisecond)
-		stopTick = func() {
-			ticker.Stop()
-			// stopTick is called from the main goroutine after Spawn returns;
-			// the repaint goroutine may have just written a frame, so clear it.
-			os.Stdout.WriteString(panel.Teardown())
-			fmt.Print("\x1b[?25h") // show cursor again
-		}
-	}
-	startPanel := func() {
-		if panelActive {
-			panel.Restart()
-			// paint: clear the previously rendered panel, hide cursor, draw.
-			os.Stdout.WriteString(panel.Teardown())
-			fmt.Print("\x1b[?25l")
-			_, _ = os.Stdout.WriteString(panel.Render())
-		}
 	}
 	for round := 0; round < maxGateRounds; round++ {
+		// One repaint loop per round. A stopped ticker never ticks again, so
+		// each round owns a fresh one; we also wait for the painter to
+		// finish before clearing the panel, so a stop never leaves a torn
+		// frame behind.
+		var ticker *time.Ticker
+		var stopRepaint, repaintDone chan struct{}
 		if panelActive {
 			panel.SetRound(round + 1)
-			startPanel()
-			// Repaint the panel on a timer while the agent runs. Each frame
-			// first clears the previous frame (Teardown erases exactly what
-			// the last Render painted), then draws the new one; the observer
-			// goroutine feeds new lines into the panel concurrently.
+			panel.Restart()
+			os.Stdout.WriteString(panel.Teardown())
+			fmt.Print("\x1b[?25l") // hide the cursor while repainting
+			_, _ = os.Stdout.WriteString(panel.Render())
+			ticker = time.NewTicker(100 * time.Millisecond)
+			stopRepaint, repaintDone = make(chan struct{}), make(chan struct{})
 			go func() {
-				for range ticker.C {
-					_, _ = os.Stdout.WriteString(panel.Teardown() + panel.Render())
+				defer close(repaintDone)
+				for {
+					select {
+					case <-stopRepaint:
+						return
+					case <-ticker.C:
+						_, _ = os.Stdout.WriteString(panel.Teardown() + panel.Render())
+					}
 				}
 			}()
 		}
@@ -529,8 +524,11 @@ func runCmd(a []string) int {
 		}
 		res, err := agent.SpawnWithObserver(ctx, agentSpec, argv, env, ws, stall, max, observer)
 		if panelActive {
-			// Stop the repaint and tear down the panel.
-			stopTick()
+			close(stopRepaint)
+			<-repaintDone
+			ticker.Stop()
+			os.Stdout.WriteString(panel.Teardown())
+			fmt.Print("\x1b[?25h") // show the cursor again
 		}
 		if err != nil {
 			die(err.Error(), 1)
@@ -849,6 +847,9 @@ Flags:
   --interactive         pause at structured checkpoints (triage/permission/
                          publish) and resume with your decisions
   --auto-skip-gates     non-interactive: checkpoints auto-deny (the CI default)
+  On a terminal, run shows a live panel (spinner, elapsed, idle-since-last-
+  output, stage) and one-key question boxes at checkpoints; piped output is
+  unchanged.
 
 Auth: we never ask for an API key. The agent CLI on PATH carries its own
 auth.

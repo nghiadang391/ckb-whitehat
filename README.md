@@ -68,6 +68,14 @@ challenge and writes `FINDINGS.md` to a workspace outside the target repo.
 Like no-mistakes, it **never asks for an API key** — the agent binary
 carries its own auth.
 
+On a terminal, `run` shows a live panel while the agent works — a spinner,
+elapsed time, **idle seconds since the last output line** (your "is it
+stuck?" signal), the current stage (triage → hypotheses → poc → firing →
+report), and the last few agent lines. When `--interactive` is on and the
+agent raises a checkpoint, a question box appears with one-key choices
+(`a` approve / `s` skip / `d` deny / `x` stop). Piped or redirected
+output (CI, tests) is the plain text path — byte-identical to before.
+
 ### Prerequisites
 
 The binary itself is self-contained, but a run needs local tooling:
