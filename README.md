@@ -68,11 +68,16 @@ challenge and writes `FINDINGS.md` to a workspace outside the target repo.
 Like no-mistakes, it **never asks for an API key** — the agent binary
 carries its own auth.
 
-On a terminal, `run` shows a live panel while the agent works — a spinner,
-elapsed time, **idle seconds since the last output line** (your "is it
-stuck?" signal), the current stage (triage → hypotheses → poc → firing →
-report), and the last few agent lines. When `--interactive` is on and the
-agent raises a checkpoint, a question box appears with one-key choices
+On a terminal, `run` shows a live **box** while the agent works: a header
+row, a status row (spinner, elapsed time, **idle seconds since the last
+output line** — your "is it stuck?" signal, the current stage
+(triage → hypotheses → poc → firing → report), the round), and a lower
+panel that shows the agent's last few lines. If the agent goes quiet for
+more than half of `--stall-timeout`, the lower panel flips to a
+**stall warning** so you see *why* it's silent ("likely blocked on a
+permission prompt — widen the allowlist") before the run is killed. When
+`--interactive` is on and the agent raises a checkpoint, the lower panel
+becomes the question with one-key choices
 (`a` approve / `s` skip / `d` deny / `x` stop). Piped or redirected
 output (CI, tests) is the plain text path — byte-identical to before.
 
