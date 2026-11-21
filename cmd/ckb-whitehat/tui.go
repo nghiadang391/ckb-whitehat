@@ -18,27 +18,34 @@ import (
 type LivePanel struct {
 	mu sync.Mutex
 
-	header    string
-	maxRounds int
-	round     int
+	header     string
+	maxRounds  int
+	round      int
+	stallLimit time.Duration // 0 = no stall warning ever
 
 	history       []string
 	startedAt     time.Time
 	lastOutputAt  time.Time
 	renderedLines int // line count of the last Render(), feeds Teardown()
+
+	// gate view: when gateID != "" Render shows the question lower panel.
+	gateID  string
+	gateDet string
 }
 
 const historyLimit = 200
 
 // NewLivePanel returns a panel for an agent run with the given header (e.g.
-// "running claude against /repo") and maximum gate-checkpoint rounds. The
-// clock starts at construction and round starts at 1.
-func NewLivePanel(header string, maxRounds int) *LivePanel {
+// "running claude against /repo"), maximum gate-checkpoint rounds, and stall
+// limit. A zero stallLimit disables the stall warning. The clock starts at
+// construction and round starts at 1.
+func NewLivePanel(header string, maxRounds int, stallLimit time.Duration) *LivePanel {
 	now := time.Now()
 	return &LivePanel{
 		header:       header,
 		maxRounds:    maxRounds,
 		round:        1,
+		stallLimit:   stallLimit,
 		startedAt:    now,
 		lastOutputAt: now,
 	}
@@ -74,6 +81,24 @@ func (p *LivePanel) OnLine(line string) {
 	p.lastOutputAt = time.Now()
 }
 
+// SetGate puts the box in the gate-question view when gateID != "", or
+// clears it when gateID == "". The orchestrator calls this when a gate
+// checkpoint opens and closes again; mutex-guarded like the rest.
+func (p *LivePanel) SetGate(gateID, detail string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.gateID = gateID
+	p.gateDet = detail
+}
+
+// ForceIdleForTest backdates lastOutputAt by d so tests can exercise the
+// stall lower panel without waiting for real idle time. Test-only hook.
+func (p *LivePanel) ForceIdleForTest(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lastOutputAt = time.Now().Add(-d)
+}
+
 // formatElapsed renders a duration as plain human time: "12s", "4m05s", "4m12s".
 func formatElapsed(d time.Duration) string {
 	total := int(d.Seconds())
@@ -87,46 +112,102 @@ func formatElapsed(d time.Duration) string {
 	return fmt.Sprintf("%dm%02ds", m, s)
 }
 
-// Render returns the full panel block to write to stdout: one status line
-// followed by up to the last 3 non-empty history lines. With empty history
-// the panel is exactly one line. The line count is remembered so Teardown
-// can erase exactly what Render painted.
+// runeLen counts the display runes of s (one space per box row of padding).
+func runeLen(s string) int { return len([]rune(s)) }
+
+// Render returns the full bordered box to write to stdout. Layout:
+//
+//	┌ <header> <pad> ┐
+//	│ <spinner> running · <elapsed> · idle <n>s · stage: <stage> · round <r>/<max> │
+//	│ <lower panel>                                  │
+//	└ <pad> ┘
+//
+// The lower panel is chosen by precedence: (1) the gate question when a gate
+// is active, else (2) the stall warning when stallLimit > 0 and idle time has
+// reached stallLimit/2, else (3) the agent tail: the last up-to-3 non-empty
+// history lines. The line count is remembered so Teardown erases exactly
+// what Render painted.
 func (p *LivePanel) Render() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	elapsed := time.Since(p.startedAt)
-	idle := int(time.Since(p.lastOutputAt).Seconds())
+	idleDur := time.Since(p.lastOutputAt)
+	idle := int(idleDur.Seconds())
 
-	tail := make([]string, 0, 3)
-	for i := len(p.history) - 1; i >= 0 && len(tail) < 3; i-- {
-		if p.history[i] == "" {
-			continue
+	status := fmt.Sprintf("running · %s · idle %ds · stage: %s · round %d/%d",
+		formatElapsed(elapsed), idle, InferStage(p.history), p.round, p.maxRounds)
+	spin := SpinFrame(int(elapsed.Milliseconds()) / 100)
+
+	// Lower panel, by precedence: gate > stall > agent tail. The mode
+	// decision lives in tui_state.go (ChooseLowerMode); this box only
+	// renders whatever mode wins.
+	var lower []string
+	switch ChooseLowerMode(p.gateID != "", idleDur, p.stallLimit) {
+	case modeGate:
+		line := p.gateID
+		if p.gateDet != "" {
+			line += "  " + p.gateDet
 		}
-		tail = append(tail, p.history[i])
-	}
-	// tail was collected newest-first; restore chronological order.
-	for i, j := 0, len(tail)-1; i < j; i, j = i+1, j-1 {
-		tail[i], tail[j] = tail[j], tail[i]
+		lower = []string{"── checkpoint ─", line, "[a]pprove  [s]kip  [d]eny  [x]stop"}
+	case modeStall:
+		lower = append([]string{"── stalled? ─"}, strings.Split(StallWarning(idleDur), "\n")...)
+	default:
+		tail := make([]string, 0, 3)
+		for i := len(p.history) - 1; i >= 0 && len(tail) < 3; i-- {
+			if p.history[i] == "" {
+				continue
+			}
+			tail = append(tail, p.history[i])
+		}
+		// tail was collected newest-first; restore chronological order.
+		for i, j := 0, len(tail)-1; i < j; i, j = i+1, j-1 {
+			tail[i], tail[j] = tail[j], tail[i]
+		}
+		lower = []string{"── agent ─"}
+		for _, l := range tail {
+			lower = append(lower, "  · "+l)
+		}
 	}
 
-	lines := []string{fmt.Sprintf("%s %s · %s · idle %ds · stage: %s [round %d/%d]",
-		SpinFrame(int(elapsed.Milliseconds())/100), p.header,
-		formatElapsed(elapsed), idle, InferStage(p.history), p.round, p.maxRounds)}
-	for _, l := range tail {
-		lines = append(lines, "  · "+l)
+	// All box rows share one inner width: the widest content row.
+	inner := append([]string{p.header, spin + " " + status}, lower...)
+	width := 0
+	for _, s := range inner {
+		if n := runeLen(s); n > width {
+			width = n
+		}
 	}
+	padSpace := func(s string) string { return s + strings.Repeat(" ", width-runeLen(s)) }
+	padDash := func(s string) string { return s + strings.Repeat("─", width-runeLen(s)) }
+
+	lines := make([]string, 0, len(inner)+2)
+	lines = append(lines, "┌ "+padSpace(p.header)+" ┐")
+	lines = append(lines, "│ "+padSpace(spin+" "+status)+" │")
+	for _, s := range lower {
+		if strings.HasPrefix(s, "──") {
+			lines = append(lines, "│ "+padDash(s)+" │")
+		} else {
+			lines = append(lines, "│ "+padSpace(s)+" │")
+		}
+	}
+	lines = append(lines, "└ "+strings.Repeat(" ", width)+" ┘")
+
 	p.renderedLines = len(lines)
 	return strings.Join(lines, "\n") + "\n"
 }
 
 // Teardown returns ANSI escape sequences that erase the currently rendered
 // panel: cursor-up N followed by N per-line clears, where N is the line
-// count of the last Render call.
+// count of the last Render call. It is idempotent — after a Teardown the
+// line count is reset to 0, so a second Teardown (e.g. the next round
+// re-clearing an already-cleared box) is a no-op rather than a double erase.
 func (p *LivePanel) Teardown() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return ClearLines(p.renderedLines)
+	n := p.renderedLines
+	p.renderedLines = 0
+	return ClearLines(n)
 }
 
 // Question renders the lower question panel for a gate checkpoint:
@@ -136,6 +217,8 @@ func (p *LivePanel) Teardown() string {
 //	[a]pprove  [s]kip  [d]eny  [x]top
 //
 // Key reading is NOT part of this panel; the caller uses ReadSingleKey.
+// Render reuses the same question text in its gate lower panel; Question
+// remains for callers that paint the question as a plain block.
 func (p *LivePanel) Question(gateID, detail string) string {
 	var b strings.Builder
 	b.WriteString("── checkpoint " + strings.Repeat("─", 30) + "\n")

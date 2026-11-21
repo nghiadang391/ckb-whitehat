@@ -486,7 +486,7 @@ func runCmd(a []string) int {
 	panelActive := IsTerminal()
 	var panel *LivePanel
 	if panelActive {
-		panel = NewLivePanel(fmt.Sprintf("running %s against %s", agentSpec.Name, cfg.Target), maxGateRounds)
+		panel = NewLivePanel(fmt.Sprintf("running %s against %s", agentSpec.Name, cfg.Target), maxGateRounds, stall)
 	}
 	for round := 0; round < maxGateRounds; round++ {
 		// One repaint loop per round. A stopped ticker never ticks again, so
@@ -575,15 +575,27 @@ func runCmd(a []string) int {
 }
 
 // resolveGatePanel resolves a gate checkpoint when the live panel is active
-// on a TTY: it paints the question box, reads a single key, and records the
-// decision. Falls back to the plain non-interactive resolveGate when no key
-// arrives (e.g. Ctrl-C, EOF, or a non-letter key), which safely denies.
+// on a TTY: it flips the box to the gate-question lower panel, reads a
+// single key, and records the decision. The box repaints in place, so the
+// question sits inside the bordered panel rather than below it. Falls back
+// to the plain non-interactive resolveGate when no key arrives (e.g.
+// Ctrl-C, EOF, or a non-letter key), which safely denies.
 func resolveGatePanel(store *gates.Store, p *LivePanel, g *gates.Gate) (gates.Decision, error) {
-	os.Stdout.WriteString(p.Question(g.ID, g.Details))
+	// Flip the box into the gate-question lower panel and repaint it in
+	// place (the cursor is already hidden by the round loop).
+	p.SetGate(g.ID, g.Details)
+	os.Stdout.WriteString(p.Teardown() + p.Render())
 	key, err := ReadSingleKey()
 	if err != nil {
+		// Erase the question so no ghost frame lingers, restore the cursor,
+		// and fall back to the plain resolution.
+		p.SetGate("", "")
+		os.Stdout.WriteString(p.Teardown())
+		fmt.Print("\x1b[?25h")
 		return resolveGate(store, g, false)
 	}
+	// Back to the running view for the next repaint.
+	p.SetGate("", "")
 	var choice string
 	switch key {
 	case 'a':

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInferStagePrecedence(t *testing.T) {
@@ -76,12 +77,106 @@ func TestClearLines(t *testing.T) {
 	}
 }
 
+func TestNewLivePanelStallLimit(t *testing.T) {
+	// Both limits construct cleanly.
+	if p := NewLivePanel("h", 3, 0); p == nil {
+		t.Fatal("NewLivePanel with zero stallLimit must construct")
+	}
+	p := NewLivePanel("h", 3, 300*time.Second)
+	if p.stallLimit != 300*time.Second {
+		t.Errorf("stallLimit = %s, want 300s", p.stallLimit)
+	}
+
+	// With stallLimit 0 the stall lower panel never triggers, even after
+	// forcing a huge idle.
+	none := NewLivePanel("h", 3, 0)
+	none.OnLine("x")
+	none.ForceIdleForTest(10 * time.Hour)
+	if got := none.Render(); strings.Contains(got, "⚠ no output") {
+		t.Errorf("stallLimit 0 must never show the stall warning: %q", got)
+	}
+}
+
+func TestBoxGateView(t *testing.T) {
+	p := NewLivePanel("h", 3, 300*time.Second)
+	p.OnLine("a")
+	p.OnLine("b")
+	p.OnLine("c")
+	p.SetGate("permission", "agent wants X")
+
+	got := p.Render()
+	for _, want := range []string{"┌", "permission", "agent wants X", "[a]pprove  [s]kip  [d]eny  [x]stop", "└"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("gate-view Render missing %q in %q", want, got)
+		}
+	}
+	// The gate view suppresses the agent tail.
+	if strings.Contains(got, "── agent ─") {
+		t.Errorf("gate view must not show the agent tail: %q", got)
+	}
+
+	// Clearing the gate returns the lower panel to the agent-tail view.
+	p.SetGate("", "")
+	got = p.Render()
+	if !strings.Contains(got, "── agent ─") || !strings.Contains(got, "· c") {
+		t.Errorf("after SetGate(\"\",\"\"), lower panel must be the agent tail: %q", got)
+	}
+}
+
+func TestBoxStallWarning(t *testing.T) {
+	p := NewLivePanel("h", 3, 300*time.Second)
+	p.OnLine("a")
+	p.OnLine("b")
+	p.OnLine("c")
+	p.ForceIdleForTest(160 * time.Second) // >= stallLimit/2 = 150s
+
+	got := p.Render()
+	if !strings.Contains(got, "⚠ no output") {
+		t.Errorf("stalled Render missing the warning: %q", got)
+	}
+	if strings.Contains(got, "── agent ─") {
+		t.Errorf("stalled Render must not show the agent tail: %q", got)
+	}
+	for _, want := range []string{"permission prompt (allowlist)", "press x to stop"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stalled Render missing %q in %q", want, got)
+		}
+	}
+
+	// With stallLimit 0 the warning never appears even at the same idle.
+	none := NewLivePanel("h", 3, 0)
+	none.OnLine("a")
+	none.ForceIdleForTest(160 * time.Second)
+	if got := none.Render(); strings.Contains(got, "⚠ no output") {
+		t.Errorf("stallLimit 0 must suppress the stall warning: %q", got)
+	}
+}
+
+func TestBoxTeardownLineCount(t *testing.T) {
+	p := NewLivePanel("h", 3, 300*time.Second)
+	p.OnLine("a")
+	p.SetGate("g", "detail")
+	got := p.Render()
+	n := len(strings.Split(strings.TrimRight(got, "\n"), "\n"))
+	if n <= 0 {
+		t.Fatalf("Render produced no lines: %q", got)
+	}
+	teardown := p.Teardown()
+	if !strings.Contains(teardown, fmt.Sprintf("\x1b[%dA", n)) {
+		t.Errorf("Teardown missing cursor-up %d: %q", n, teardown)
+	}
+	if c := strings.Count(teardown, "\x1b[2K"); c != n {
+		t.Errorf("Teardown has %d line-clears, want %d", c, n)
+	}
+}
+
 func TestLivePanelRenderGrows(t *testing.T) {
-	p := NewLivePanel("running claude against /t", 3)
+	p := NewLivePanel("running claude against /t", 3, 0)
 
 	first := p.Render()
-	if n := strings.Count(first, "\n"); n != 1 {
-		t.Fatalf("empty-history Render = %q, want exactly 1 line (1 trailing newline)", first)
+	// Empty history: top border, status row, agent-tail divider, bottom border.
+	if n := len(strings.Split(strings.TrimRight(first, "\n"), "\n")); n != 4 {
+		t.Fatalf("empty-history Render = %q, want exactly 4 lines (2 borders + status + divider)", first)
 	}
 
 	p.OnLine("triage started")
@@ -89,22 +184,27 @@ func TestLivePanelRenderGrows(t *testing.T) {
 	p.OnLine("FINDING F1 FIRED")
 
 	got := p.Render()
-	for _, want := range []string{"stage: firing", "[round 1/3]", "  · triage started", "  · writing poc/f1.mjs", "  · FINDING F1 FIRED"} {
+	for _, want := range []string{
+		"stage: firing", "round 1/3",
+		"· triage started", "· writing poc/f1.mjs", "· FINDING F1 FIRED",
+		"┌", "└",
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Render missing %q in %q", want, got)
 		}
 	}
-	if n := strings.Count(got, "\n"); n != 4 {
-		t.Errorf("Render after 3 lines has %d lines, want 4 (status + 3 tails)", n)
+	// Borders + status + 3 tail lines = 7 lines.
+	if n := len(strings.Split(strings.TrimRight(got, "\n"), "\n")); n != 7 {
+		t.Errorf("Render after 3 lines has %d lines, want 7 (2 borders + status + 3 tails)", n)
 	}
 	// Teardown must erase exactly what the last Render painted.
-	if teardown := p.Teardown(); !strings.Contains(teardown, "\x1b[4A") || strings.Count(teardown, "\x1b[2K") != 4 {
-		t.Errorf("Teardown after 4-line render = %q, want cursor-up 4 + 4 line-clears", teardown)
+	if teardown := p.Teardown(); !strings.Contains(teardown, "\x1b[7A") || strings.Count(teardown, "\x1b[2K") != 7 {
+		t.Errorf("Teardown after 7-line render = %q, want cursor-up 7 + 7 line-clears", teardown)
 	}
 }
 
 func TestLivePanelTailIsLastThreeInOrder(t *testing.T) {
-	p := NewLivePanel("h", 1)
+	p := NewLivePanel("h", 1, 0)
 	for i := 0; i < 250; i++ { // 250 lines also exercises the 200-line cap
 		p.OnLine(fmt.Sprintf("L%d", i))
 	}
@@ -126,7 +226,7 @@ func TestLivePanelTailIsLastThreeInOrder(t *testing.T) {
 }
 
 func TestLivePanelTeardownErasesRenderedLines(t *testing.T) {
-	p := NewLivePanel("h", 2)
+	p := NewLivePanel("h", 2, 0)
 	// Fresh panel: nothing rendered yet.
 	if got := p.Teardown(); got != "" {
 		t.Errorf("Teardown before any Render = %q, want empty", got)
@@ -135,18 +235,22 @@ func TestLivePanelTeardownErasesRenderedLines(t *testing.T) {
 	p.OnLine("b")
 	p.OnLine("c")
 	p.OnLine("d")
-	p.Render() // 4 lines
-	got := p.Teardown()
-	if n := strings.Count(got, "\x1b[2K"); n != 4 {
-		t.Errorf("Teardown after 4-line Render has %d line-clears, want 4", n)
+	got := p.Render() // 2 borders + status + 3 tails = 7 lines
+	n := len(strings.Split(strings.TrimRight(got, "\n"), "\n"))
+	if n != 7 {
+		t.Fatalf("Render produced %d lines, want 7: %q", n, got)
 	}
-	if !strings.Contains(got, "\x1b[4A") {
-		t.Errorf("Teardown after 4-line Render missing cursor-up 4: %q", got)
+	got = p.Teardown()
+	if c := strings.Count(got, "\x1b[2K"); c != 7 {
+		t.Errorf("Teardown after 7-line Render has %d line-clears, want 7", c)
+	}
+	if !strings.Contains(got, "\x1b[7A") {
+		t.Errorf("Teardown after 7-line Render missing cursor-up 7: %q", got)
 	}
 }
 
 func TestQuestionPanel(t *testing.T) {
-	p := NewLivePanel("h", 1)
+	p := NewLivePanel("h", 1, 0)
 	got := p.Question("g2", "agent fired 2 of 5 findings")
 	for _, want := range []string{
 		"── checkpoint", "[a]pprove", "[s]kip", "[d]eny", "[x]top", "g2", "agent fired 2 of 5 findings",
