@@ -68,6 +68,22 @@ func TestStreamParserClaudeEvents(t *testing.T) {
 	if p.PlainText() != wantPlain {
 		t.Fatalf("PlainText:\ngot:  %q\nwant: %q", p.PlainText(), wantPlain)
 	}
+
+	wantActivity := strings.Join([]string{
+		"→ Read contracts/lock.rs",
+		"→ Write poc/exploit.rs",
+		"→ Edit poc/exploit.rs",
+		"→ Bash cargo test --nocapture",
+		"→ Grep verify_signature contracts",
+		"→ Glob **/*.rs",
+		"→ CustomTool",
+		"⚠ permission denied: Claude requested permissions to use Bash, but you haven't granted it yet.",
+		"⚠ permission denied: Tool not allowed in dontAsk mode",
+		"✗ tool error: File does not exist: missing.rs",
+	}, "\n") + "\n"
+	if p.Activity() != wantActivity {
+		t.Fatalf("Activity:\ngot:  %q\nwant: %q", p.Activity(), wantActivity)
+	}
 }
 
 func TestStreamParserClaudeResultFallbackAndError(t *testing.T) {
@@ -169,6 +185,9 @@ func TestStreamParserPlainTextPassthrough(t *testing.T) {
 	if p.PlainText() != wantPlain {
 		t.Fatalf("PlainText:\ngot:  %q\nwant: %q", p.PlainText(), wantPlain)
 	}
+	if p.Activity() != "" {
+		t.Fatalf("plain-text passthrough should not record structured activity, got %q", p.Activity())
+	}
 }
 
 func TestStreamParserHugeLineAndObserverCap(t *testing.T) {
@@ -240,5 +259,8 @@ func TestStreamParserNilObserver(t *testing.T) {
 	want := "hello\nworld\nplain\n"
 	if p.PlainText() != want {
 		t.Fatalf("PlainText:\ngot:  %q\nwant: %q", p.PlainText(), want)
+	}
+	if p.Activity() != "→ Bash ls\n" {
+		t.Fatalf("Activity with nil observer:\ngot:  %q\nwant: %q", p.Activity(), "→ Bash ls\n")
 	}
 }

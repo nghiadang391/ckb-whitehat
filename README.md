@@ -141,8 +141,9 @@ the PoC runs against it in-tree: `node tapfiber/poc/attack.mjs`.
   `claude -p --verbose --output-format stream-json --permission-mode dontAsk --setting-sources user`
   and the default offline tool allowlist (`Bash(node:*)`,
   `Bash(pg_isready:*)`, `Bash(git:*)`, `Bash(grep:*)`, `Bash(ls:*)`,
-  `Bash(mkdir:*)`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `LS` —
-  deliberately excluding `curl`, `wget`, and `psql`). Unapproved tools fail
+  `Bash(mkdir:*)`, `Bash(cd:*)`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `LS` —
+  deliberately excluding `curl`, `wget`, `psql`, and command launchers like
+  `env`). Unapproved tools fail
   immediately instead of silently blocking until stall timeout, and
   `--setting-sources user` prevents project-local `.claude/` settings in an
   untrusted target repo from overriding permissions or hooks. Codex runs with

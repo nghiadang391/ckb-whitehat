@@ -9,20 +9,27 @@ import (
 // tool command or text chunk never floods the TUI or unbounded observer state.
 const maxObserverLineRunes = 500
 
+// maxActivityLineRunes caps each structured tool/error line recorded for
+// run.log so full Bash commands and permission-denial explanations are
+// preserved without letting a pathological payload bloat the log file.
+const maxActivityLineRunes = 1000
+
 // StreamParser incrementally decodes newline-delimited stdout from agent CLIs
 // (Claude Code `--output-format stream-json` and Codex `exec --json`),
-// extracting clean assistant prose into PlainText() while emitting concise
+// extracting clean assistant prose into PlainText(), recording structured tool
+// calls and tool/permission errors in Activity(), and emitting concise
 // single-line activity indicators to onLine.
 //
 // Any line that is not a JSON object with a recognized event "type" is passed
 // through verbatim as plain text, preserving 100% compatibility with plain-text
 // agents and test shell scripts.
 //
-// StreamParser is not internally synchronized; callers must serialize FeedLine
-// and PlainText calls (SpawnWithObserver holds the feeder mutex).
+// StreamParser is not internally synchronized; callers must serialize FeedLine,
+// PlainText, and Activity calls (SpawnWithObserver holds the feeder mutex).
 type StreamParser struct {
 	onLine    func(string)
 	plainText strings.Builder
+	activity  strings.Builder
 }
 
 // NewStreamParser returns a StreamParser that emits live activity lines to
@@ -35,6 +42,12 @@ func NewStreamParser(onLine func(string)) *StreamParser {
 // passthrough plain text).
 func (p *StreamParser) PlainText() string {
 	return p.plainText.String()
+}
+
+// Activity returns the accumulated structured tool-call and tool/permission
+// error log (empty for plain-text agents that emit no structured events).
+func (p *StreamParser) Activity() string {
+	return p.activity.String()
 }
 
 type streamEnvelope struct {
@@ -130,6 +143,14 @@ func (p *StreamParser) emit(line string) {
 	p.onLine(truncateRunes(line, maxObserverLineRunes))
 }
 
+// recordActivity appends a structured tool/error event to Activity() (even
+// when onLine is nil) and forwards it to the live observer.
+func (p *StreamParser) recordActivity(line string) {
+	p.activity.WriteString(truncateRunes(line, maxActivityLineRunes))
+	p.activity.WriteByte('\n')
+	p.emit(line)
+}
+
 func (p *StreamParser) appendPlainText(text string) {
 	if text == "" {
 		return
@@ -170,7 +191,7 @@ func (p *StreamParser) handleClaudeAssistant(rawMsg json.RawMessage) {
 			}
 		case "tool_use":
 			if summary := formatToolUse(c.Name, c.Input); summary != "" {
-				p.emit(summary)
+				p.recordActivity(summary)
 			}
 		}
 	}
@@ -194,9 +215,9 @@ func (p *StreamParser) handleClaudeUser(rawMsg json.RawMessage) {
 			summary = "unknown error"
 		}
 		if isPermissionError(text) {
-			p.emit("⚠ permission denied: " + summary)
+			p.recordActivity("⚠ permission denied: " + summary)
 		} else {
-			p.emit("✗ tool error: " + summary)
+			p.recordActivity("✗ tool error: " + summary)
 		}
 	}
 }
@@ -212,9 +233,9 @@ func (p *StreamParser) handleClaudeResult(env streamEnvelope) {
 			if !strings.Contains(p.plainText.String(), trimmed) {
 				p.appendPlainText(resultText)
 			}
-			p.emit("✗ agent error: " + firstNonEmptyLine(resultText))
+			p.recordActivity("✗ agent error: " + firstNonEmptyLine(resultText))
 		} else if env.Subtype != "" {
-			p.emit("✗ agent error: " + sanitizeSingleLine(env.Subtype))
+			p.recordActivity("✗ agent error: " + sanitizeSingleLine(env.Subtype))
 		}
 		return
 	}
@@ -231,9 +252,9 @@ func (p *StreamParser) handleCodexItemStarted(item *codexStreamItem) {
 	if item.Type == "command_execution" {
 		cmd := sanitizeSingleLine(item.Command)
 		if cmd == "" {
-			p.emit("→ Bash")
+			p.recordActivity("→ Bash")
 		} else {
-			p.emit("→ Bash " + cmd)
+			p.recordActivity("→ Bash " + cmd)
 		}
 	}
 }
@@ -273,7 +294,7 @@ func (p *StreamParser) handleCodexError(env streamEnvelope) {
 	if summary == "" {
 		summary = "unknown error"
 	}
-	p.emit("✗ codex error: " + summary)
+	p.recordActivity("✗ codex error: " + summary)
 }
 
 func formatToolUse(name string, rawInput json.RawMessage) string {
