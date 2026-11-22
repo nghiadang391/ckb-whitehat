@@ -48,9 +48,10 @@ func TestRepoDirURLIsCWDIndependent(t *testing.T) {
 	if a != b {
 		t.Fatalf("RepoDir URL slug depends on CWD: %q vs %q", a, b)
 	}
+	slug := filepath.Base(a)
 	for _, d := range dirs {
-		if strings.Contains(a, filepath.Base(d)) {
-			t.Fatalf("repo dir %q embeds a CWD component %q", a, filepath.Base(d))
+		if strings.Contains(slug, filepath.Base(d)) {
+			t.Fatalf("repo dir slug %q (%q) embeds a CWD component %q", slug, a, filepath.Base(d))
 		}
 	}
 	if err := os.Chdir(dirs[2]); err != nil {

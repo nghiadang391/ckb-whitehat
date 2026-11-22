@@ -73,7 +73,11 @@ func Args(s Spec, allowed []string, skip bool, target, prompt string) []string {
 				a = append(a, "--allowedTools", strings.Join(allowed, ","))
 			}
 		}
-		a = append(a, "--verbose", "--output-format", "stream-json", "--setting-sources", "user", "--add-dir", target)
+		// --add-dir <directories...> is variadic in Claude Code's CLI parser,
+		// so it MUST appear before non-variadic flags (never directly before
+		// the positional prompt, or Commander.js swallows the prompt as a
+		// second directory) and "--" terminates option parsing before prompt.
+		a = append(a, "--add-dir", target, "--setting-sources", "user", "--verbose", "--output-format", "stream-json", "--")
 	case s.Name == Codex:
 		if skip {
 			a = append([]string{"--dangerously-bypass-approvals-and-sandbox"}, a...)

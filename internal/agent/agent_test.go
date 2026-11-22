@@ -13,15 +13,18 @@ func TestArgs(t *testing.T) {
 	claude := Candidates[0]
 
 	// Claude default (skip=false) with allowed tools.
+	// --add-dir <directories...> is variadic, so non-variadic flags and "--"
+	// must separate it from the positional prompt.
 	got := Args(claude, []string{"Read", "Write"}, false, "/target", "prompt")
 	want := []string{
 		"-p",
 		"--permission-mode", "dontAsk",
 		"--allowedTools", "Read,Write",
+		"--add-dir", "/target",
+		"--setting-sources", "user",
 		"--verbose",
 		"--output-format", "stream-json",
-		"--setting-sources", "user",
-		"--add-dir", "/target",
+		"--",
 		"prompt",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -33,10 +36,11 @@ func TestArgs(t *testing.T) {
 	want = []string{
 		"-p",
 		"--permission-mode", "dontAsk",
+		"--add-dir", "/target",
+		"--setting-sources", "user",
 		"--verbose",
 		"--output-format", "stream-json",
-		"--setting-sources", "user",
-		"--add-dir", "/target",
+		"--",
 		"prompt",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -48,10 +52,11 @@ func TestArgs(t *testing.T) {
 	want = []string{
 		"--dangerously-skip-permissions",
 		"-p",
+		"--add-dir", "/target",
+		"--setting-sources", "user",
 		"--verbose",
 		"--output-format", "stream-json",
-		"--setting-sources", "user",
-		"--add-dir", "/target",
+		"--",
 		"prompt",
 	}
 	if !reflect.DeepEqual(got, want) {
