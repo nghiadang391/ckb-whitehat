@@ -94,6 +94,39 @@ func TestArgs(t *testing.T) {
 	}
 }
 
+func TestReadOnlyArgs(t *testing.T) {
+	claude := Candidates[0]
+	got := ReadOnlyArgs(claude, []string{"Read", "Glob", "Grep", "LS"}, "/target", "inspect")
+	want := []string{
+		"-p",
+		"--permission-mode", "dontAsk",
+		"--allowedTools", "Read,Glob,Grep,LS",
+		"--add-dir", "/target",
+		"--setting-sources", "user",
+		"--verbose",
+		"--output-format", "stream-json",
+		"--",
+		"inspect",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claude read-only:\ngot:  %#v\nwant: %#v", got, want)
+	}
+
+	codex := Candidates[1]
+	got = ReadOnlyArgs(codex, []string{"Read"}, "/target", "inspect")
+	want = []string{
+		"exec",
+		"--sandbox", "read-only",
+		"--json",
+		"--color", "never",
+		"-c", "project_doc_max_bytes=0",
+		"inspect",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("codex read-only:\ngot:  %#v\nwant: %#v", got, want)
+	}
+}
+
 func TestEnv(t *testing.T) {
 	got := Env([]string{"A=B"}, "/w", "/t")
 	if len(got) != 3 || got[1] != "CKB_WHITEHAT_WORKSPACE=/w" {

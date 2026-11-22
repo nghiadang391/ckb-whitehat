@@ -100,10 +100,17 @@ The binary itself is self-contained, but a run needs local tooling:
 | A scratch **Postgres** | DB-backed PoCs (ledger, callback, race classes) | those findings report "DB unavailable" in FINDINGS.md instead of firing |
 | Two **Fiber (FNN) nodes** on a public testnet + our own addresses | the on-chain evidence layer (`--scope chain` / `--chain`) only | the run degrades to app-scope; on-chain section is N/A |
 
-`init` checks what it can (node version, FNN node `node_info` on the
-well-known local ports, Postgres via `pg_isready`) and prints a
-`prerequisites:` block so you know before the run which layers will work.
-It is informational, never blocking — init succeeds either way.
+`init` fails fast if no agent CLI (`claude` or `codex`) is on PATH, then runs
+the agent in **strictly read-only mode** (`Read,Glob,Grep,LS` — no `Bash`, no
+`Write`) to inspect the target repo's stack (JS/TS, Rust, Go, Python,
+Solidity, monorepos, etc.). It checks host prerequisites (Node, Postgres, FNN,
+and any extra tools discovered in the target), displays each suggested target
+dependency-install command (preferring safe `--ignore-scripts` for JS/TS by
+default, with `--allow-scripts` opt-in for native addons) with risk warnings
+for individual `[a]pprove / [d]eny / [s]kip all` confirmation on a TTY
+(auto-denied in non-TTY / CI runs or with `--no-install-deps`; external local
+directories require `--install-deps` before prompting), and saves the ground-
+truth result to `<workspace>/setup.json` for `run`.
 
 ## Dular
 

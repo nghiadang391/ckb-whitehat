@@ -56,6 +56,14 @@ func styleBoldYellow(s string) string { return ansiBoldYellow + s + ansiReset }
 func styleRed(s string) string        { return ansiRed + s + ansiReset }
 func styleCyan(s string) string       { return ansiCyan + s + ansiReset }
 
+// promptLine is one styled line inside a custom confirmation box (e.g. init's
+// per-command approval prompt). Text is sanitized on ingestion so untrusted
+// agent strings can never emit terminal escapes.
+type promptLine struct {
+	text string
+	tone string // "", "bold", "cyan", "yellow", "red", "dim"
+}
+
 // LivePanel is a live "what's running" panel. The orchestrator paints
 // Render() to stdout on a timer and Teardown() when the panel is dismissed.
 // All methods are goroutine-safe.
@@ -67,6 +75,9 @@ type LivePanel struct {
 	round      int
 	stallLimit time.Duration // 0 = no stall warning ever
 
+	stages        []pipelineStage // nil -> default audit pipelineStages
+	stageOverride string          // non-empty -> explicit active stage ID
+
 	cols int
 	rows int
 
@@ -75,9 +86,12 @@ type LivePanel struct {
 	lastOutputAt  time.Time
 	renderedLines int // line count of the last Render(), feeds Teardown()
 
-	// gate view: when gateID != "" Render shows the checkpoint lower/right panel.
-	gateID  string
-	gateDet string
+	// gate view: when gateID != "" Render shows the checkpoint/confirmation panel.
+	gateID            string
+	gateDet           string
+	gateTitle         string
+	actionBarOverride string
+	gateLines         []promptLine
 }
 
 const historyLimit = 200
@@ -147,6 +161,22 @@ func (p *LivePanel) OnLine(line string) {
 	p.lastOutputAt = time.Now()
 }
 
+// SetStages overrides the ordered stages shown in the Pipeline box (used by
+// `init` for its Target -> Inspect -> Setup -> Ready flow).
+func (p *LivePanel) SetStages(stages []pipelineStage) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stages = append([]pipelineStage(nil), stages...)
+}
+
+// SetStage explicitly pins the active stage ID (pass "" to resume automatic
+// InferStage detection from agent history).
+func (p *LivePanel) SetStage(stageID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stageOverride = stageID
+}
+
 // SetGate puts the panel in the gate-question view when gateID != "", or
 // clears it when gateID == "". The orchestrator calls this when a gate
 // checkpoint opens and closes again; mutex-guarded like the rest. Details
@@ -157,6 +187,38 @@ func (p *LivePanel) SetGate(gateID, detail string) {
 	defer p.mu.Unlock()
 	p.gateID = gates.SanitizeSingleLine(gateID)
 	p.gateDet = gates.SanitizeSingleLine(detail)
+	p.gateTitle = ""
+	p.actionBarOverride = ""
+	p.gateLines = nil
+}
+
+// SetCommandPrompt puts the panel into a custom multi-line confirmation box
+// (used by `init` for per-command approval). Pass title == "" to clear.
+// Every line is sanitized via SanitizeSingleLine so untrusted agent text
+// cannot inject terminal escapes.
+func (p *LivePanel) SetCommandPrompt(title string, lines []promptLine, actionBar string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if title == "" {
+		p.gateID = ""
+		p.gateDet = ""
+		p.gateTitle = ""
+		p.actionBarOverride = ""
+		p.gateLines = nil
+		return
+	}
+	clean := make([]promptLine, 0, len(lines))
+	for _, l := range lines {
+		clean = append(clean, promptLine{
+			text: gates.SanitizeSingleLine(l.text),
+			tone: l.tone,
+		})
+	}
+	p.gateID = gates.SanitizeSingleLine(title)
+	p.gateDet = ""
+	p.gateTitle = gates.SanitizeSingleLine(title)
+	p.actionBarOverride = actionBar
+	p.gateLines = clean
 }
 
 // ForceIdleForTest backdates lastOutputAt by d so tests can exercise the
@@ -449,9 +511,12 @@ func styleStatusBadge(mode lowerMode) string {
 }
 
 // renderPipelineBox builds the rounded Pipeline box showing header + badge,
-// the 5 ordered audit stages with optional vertical connectors, and the bottom
+// the ordered stages with optional vertical connectors, and the bottom
 // elapsed/idle/round metadata row.
-func renderPipelineBox(header string, mode lowerMode, stage string, spinIdx int, firedCount int, elapsed, idleDur time.Duration, round, maxRounds, boxWidth, rows int) string {
+func renderPipelineBox(header string, mode lowerMode, stages []pipelineStage, stage string, spinIdx int, firedCount int, elapsed, idleDur time.Duration, round, maxRounds, boxWidth, rows int) string {
+	if len(stages) == 0 {
+		stages = pipelineStages
+	}
 	contentWidth := boxWidth - 4
 	if contentWidth < 1 {
 		contentWidth = 1
@@ -478,10 +543,16 @@ func renderPipelineBox(header string, mode lowerMode, stage string, spinIdx int,
 		b.WriteString("\n")
 	}
 
-	// 5 ordered stages with vertical dim connectors when rows >= 26.
-	activeIdx := stageIndex(stage)
+	// Ordered stages with vertical dim connectors when rows >= 26.
+	activeIdx := 0
+	for i, s := range stages {
+		if s.id == stage {
+			activeIdx = i
+			break
+		}
+	}
 	showConnectors := rows >= 26
-	for i, st := range pipelineStages {
+	for i, st := range stages {
 		var icon string
 		switch {
 		case i < activeIdx:
@@ -506,7 +577,7 @@ func renderPipelineBox(header string, mode lowerMode, stage string, spinIdx int,
 		}
 		b.WriteString(line + "\n")
 
-		if showConnectors && i < len(pipelineStages)-1 {
+		if showConnectors && i < len(stages)-1 {
 			b.WriteString(styleDim("│") + "\n")
 		}
 	}
@@ -520,8 +591,14 @@ func renderPipelineBox(header string, mode lowerMode, stage string, spinIdx int,
 	if idle < 0 {
 		idle = 0
 	}
-	meta := fmt.Sprintf("elapsed %s · idle %ds · round %d/%d",
-		formatElapsed(elapsed), idle, round, maxRounds)
+	var meta string
+	if maxRounds > 0 {
+		meta = fmt.Sprintf("elapsed %s · idle %ds · round %d/%d",
+			formatElapsed(elapsed), idle, round, maxRounds)
+	} else {
+		meta = fmt.Sprintf("elapsed %s · idle %ds",
+			formatElapsed(elapsed), idle)
+	}
 	b.WriteString(styleDim(truncateDisplay(meta, contentWidth)))
 
 	return renderRoundedBox("Pipeline", b.String(), boxWidth)
@@ -640,9 +717,40 @@ func renderActionBar(width int) string {
 	return truncateDisplay(bar, width)
 }
 
+func renderSetupActionBar(width int) string {
+	bar := " " + styleBold("a") + " approve  " +
+		styleBold("d") + " deny  " +
+		styleBold("s") + " skip all"
+	return truncateDisplay(bar, width)
+}
+
+func stylePromptLine(l promptLine, contentWidth int) []string {
+	wrapped := wrapDisplay(l.text, contentWidth, 2)
+	out := make([]string, 0, len(wrapped))
+	for _, w := range wrapped {
+		t := truncateDisplay(w, contentWidth)
+		switch l.tone {
+		case "bold":
+			out = append(out, styleBold(t))
+		case "cyan":
+			out = append(out, styleBoldCyan(t))
+		case "yellow":
+			out = append(out, styleBoldYellow(t))
+		case "red":
+			out = append(out, styleRed(t))
+		case "dim":
+			out = append(out, styleDim(t))
+		default:
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // renderGateSection renders the checkpoint Action Bar directly above the
-// rounded Checkpoint box containing gateID and wrapped/truncated details.
-func renderGateSection(gateID, gateDet string, boxWidth, maxBoxBodyLines int) string {
+// rounded Checkpoint (or custom confirmation) box containing wrapped/truncated
+// details.
+func renderGateSection(gateID, gateDet, gateTitle, actionBarOverride string, gateLines []promptLine, boxWidth, maxBoxBodyLines int) string {
 	contentWidth := boxWidth - 4
 	if contentWidth < 1 {
 		contentWidth = 1
@@ -651,8 +759,25 @@ func renderGateSection(gateID, gateDet string, boxWidth, maxBoxBodyLines int) st
 		maxBoxBodyLines = 1
 	}
 
+	title := "Checkpoint"
+	if gateTitle != "" {
+		title = gateTitle
+	}
+
 	var bodyLines []string
-	if maxBoxBodyLines == 1 {
+	if len(gateLines) > 0 {
+		for _, pl := range gateLines {
+			for _, styled := range stylePromptLine(pl, contentWidth) {
+				if len(bodyLines) >= maxBoxBodyLines {
+					break
+				}
+				bodyLines = append(bodyLines, styled)
+			}
+			if len(bodyLines) >= maxBoxBodyLines {
+				break
+			}
+		}
+	} else if maxBoxBodyLines == 1 {
 		combined := gateID
 		if gateDet != "" {
 			combined += "  " + gateDet
@@ -667,7 +792,10 @@ func renderGateSection(gateID, gateDet string, boxWidth, maxBoxBodyLines int) st
 	}
 
 	bar := renderActionBar(boxWidth)
-	box := renderRoundedBox("Checkpoint", strings.Join(bodyLines, "\n"), boxWidth)
+	if actionBarOverride != "" {
+		bar = truncateDisplay(actionBarOverride, boxWidth)
+	}
+	box := renderRoundedBox(title, strings.Join(bodyLines, "\n"), boxWidth)
 	return bar + "\n" + box
 }
 
@@ -711,7 +839,10 @@ func (p *LivePanel) Render() string {
 	elapsed := time.Since(p.startedAt)
 	idleDur := time.Since(p.lastOutputAt)
 	mode := ChooseLowerMode(p.gateID != "", idleDur, p.stallLimit)
-	stage := InferStage(p.history)
+	stage := p.stageOverride
+	if stage == "" {
+		stage = InferStage(p.history)
+	}
 	spinIdx := int(elapsed.Milliseconds()) / 100
 	fired := countFired(p.history)
 	denied := lastPermissionDenied(p.history)
@@ -725,7 +856,7 @@ func (p *LivePanel) Render() string {
 	var out string
 	if cols >= responsiveMinWidth {
 		leftW, rightW := responsiveColumnWidths(cols)
-		left := renderPipelineBox(p.header, mode, stage, spinIdx, fired, elapsed, idleDur, p.round, p.maxRounds, leftW, rows)
+		left := renderPipelineBox(p.header, mode, p.stages, stage, spinIdx, fired, elapsed, idleDur, p.round, p.maxRounds, leftW, rows)
 		leftH := strings.Count(left, "\n") + 1
 		maxRightH := maxTotalLines - 1 // leave 1 row for footer
 		if maxRightH < 3 {
@@ -739,7 +870,7 @@ func (p *LivePanel) Render() string {
 			if maxBody < 1 {
 				maxBody = 1
 			}
-			right = renderGateSection(p.gateID, p.gateDet, rightW, maxBody)
+			right = renderGateSection(p.gateID, p.gateDet, p.gateTitle, p.actionBarOverride, p.gateLines, rightW, maxBody)
 		case modeStall:
 			maxBody := maxRightH - 2
 			if maxBody < 1 {
@@ -765,7 +896,7 @@ func (p *LivePanel) Render() string {
 		joined := joinColumns(left, right, leftW, rightW, responsiveGap)
 		out = joined + "\n" + footer + "\n"
 	} else {
-		pipeline := renderPipelineBox(p.header, mode, stage, spinIdx, fired, elapsed, idleDur, p.round, p.maxRounds, cols, rows)
+		pipeline := renderPipelineBox(p.header, mode, p.stages, stage, spinIdx, fired, elapsed, idleDur, p.round, p.maxRounds, cols, rows)
 		pipeH := strings.Count(pipeline, "\n") + 1
 		remaining := maxTotalLines - pipeH - 1 // leave 1 row for footer
 
@@ -783,10 +914,14 @@ func (p *LivePanel) Render() string {
 				if maxBody < 1 {
 					maxBody = 1
 				}
-				lower = renderGateSection(p.gateID, p.gateDet, cols, maxBody)
+				lower = renderGateSection(p.gateID, p.gateDet, p.gateTitle, p.actionBarOverride, p.gateLines, cols, maxBody)
 			} else if remaining >= 1 {
 				gap = "\n"
-				lower = renderActionBar(cols)
+				if p.actionBarOverride != "" {
+					lower = truncateDisplay(p.actionBarOverride, cols)
+				} else {
+					lower = renderActionBar(cols)
+				}
 			}
 		case modeStall:
 			if remaining >= 3 {

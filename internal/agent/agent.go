@@ -97,6 +97,29 @@ func Args(s Spec, allowed []string, skip bool, target, prompt string) []string {
 	return append(a, prompt)
 }
 
+// ReadOnlyArgs builds CLI arguments for a strictly read-only inspection pass
+// (used by `ckb-whitehat init`): Claude gets `--permission-mode dontAsk` with
+// read-only tools only (`Read,Glob,Grep,LS`, never `Bash`/`Write`/`Edit`),
+// and Codex gets `--sandbox read-only`.
+func ReadOnlyArgs(s Spec, allowed []string, target, prompt string) []string {
+	a := append([]string{}, s.Base...)
+	switch {
+	case s.Name == Claude || s.ClaudeFlags:
+		a = append(a, "--permission-mode", "dontAsk")
+		if s.AllowedTools && len(allowed) > 0 {
+			a = append(a, "--allowedTools", strings.Join(allowed, ","))
+		}
+		a = append(a, "--add-dir", target, "--setting-sources", "user", "--verbose", "--output-format", "stream-json", "--")
+	case s.Name == Codex:
+		a = append(a, "--sandbox", "read-only", "--json", "--color", "never", "-c", "project_doc_max_bytes=0")
+	default:
+		if s.AllowedTools && len(allowed) > 0 {
+			a = append(a, "--allowedTools", strings.Join(allowed, ","))
+		}
+	}
+	return append(a, prompt)
+}
+
 func Env(base []string, workspace, target string) []string {
 	e := append([]string{}, base...)
 	e = append(e, "CKB_WHITEHAT_WORKSPACE="+workspace, "CKB_WHITEHAT_TARGET="+target)

@@ -372,7 +372,7 @@ echo "CKB-WHITEHAT-RESULT: findings=0 fired=0 report=$ws/FINDINGS.md"
 		t.Fatal(err)
 	}
 
-	runBin(t, map[string]string{"HOME": home}, "init", target)
+	runBin(t, map[string]string{"HOME": home, "PATH": fakebin + string(os.PathListSeparator) + os.Getenv("PATH")}, "init", target, "--agent", "claude")
 	code, out := runBin(t, map[string]string{"HOME": home, "PATH": fakebin + string(os.PathListSeparator) + os.Getenv("PATH")},
 		"run", target, "--agent", "claude", "--stall-timeout", "60")
 	if code != 0 {

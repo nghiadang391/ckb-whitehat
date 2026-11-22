@@ -151,3 +151,19 @@ func TestInitConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestIsManagedClone(t *testing.T) {
+	h := t.TempDir()
+	m := New(h)
+	managed := m.RepoDir("https://github.com/duongja/Dular")
+	if !m.IsManagedClone(managed) {
+		t.Fatalf("expected %q to be a managed clone", managed)
+	}
+	external := filepath.Join(h, "src", "Dular")
+	if m.IsManagedClone(external) {
+		t.Fatalf("expected %q NOT to be a managed clone", external)
+	}
+	if m.IsManagedClone(filepath.Join(m.root(), "repos")) {
+		t.Fatal("repos root itself must not count as a managed clone")
+	}
+}

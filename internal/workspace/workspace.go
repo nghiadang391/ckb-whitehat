@@ -64,6 +64,28 @@ func Slug(target string) string {
 
 func (m Manager) root() string { return filepath.Join(m.Home, ".ckb-whitehat") }
 
+// IsManagedClone reports whether dir lies inside this manager's managed clones
+// directory (~/.ckb-whitehat/repos/). Both URL-cloned targets and direct local
+// paths pointing into ~/.ckb-whitehat/repos/ return true.
+func (m Manager) IsManagedClone(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	reposRoot, err := filepath.Abs(filepath.Join(m.root(), "repos"))
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(reposRoot, absDir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
 // RepoDir returns the managed clone dir for a target spec.
 //
 // URL inputs — containing "://", starting with "git+" or "git@", or a bare
