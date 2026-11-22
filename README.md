@@ -63,23 +63,31 @@ ckb-whitehat report --target ~/src/target-repo
 ckb-whitehat compare new-report.md baseline-report.md
 ```
 
-It drives your local agent CLI (`claude -p` or `codex exec`) through the
-challenge and writes `FINDINGS.md` to a workspace outside the target repo.
-Like no-mistakes, it **never asks for an API key** — the agent binary
-carries its own auth.
+It drives your local agent CLI
+(`claude -p --verbose --output-format stream-json --permission-mode dontAsk --setting-sources user`
+or `codex exec --full-auto --json`) through the challenge and writes
+`FINDINGS.md` to a workspace outside the target repo. Structured JSONL events
+stream in real time as the agent runs tools and writes findings, and under
+Claude's `--permission-mode dontAsk` any unapproved tool fails immediately
+with a visible error instead of silently deadlocking the agent. Like
+no-mistakes, it **never asks for an API key** — the agent binary carries its
+own auth.
 
-On a terminal, `run` shows a live **box** while the agent works: a header
-row, a status row (spinner, elapsed time, **idle seconds since the last
-output line** — your "is it stuck?" signal, the current stage
-(triage → hypotheses → poc → firing → report), the round), and a lower
-panel that shows the agent's last few lines. If the agent goes quiet for
-more than half of `--stall-timeout`, the lower panel flips to a
-**stall warning** so you see *why* it's silent ("likely blocked on a
-permission prompt — widen the allowlist") before the run is killed. When
-`--interactive` is on and the agent raises a checkpoint, the lower panel
-becomes the question with one-key choices
-(`a` approve / `s` skip / `d` deny / `x` stop). Piped or redirected
-output (CI, tests) is the plain text path — byte-identical to before.
+On a terminal, `run` renders a responsive `no-mistakes`-inspired live TUI
+while the agent works: rounded-border **Pipeline** and **Log** boxes placed
+side-by-side in a 2-column layout on wide terminals (`>= 100` columns) and
+stacked vertically on narrow terminals, reflowing live on terminal resize
+with strict zero-wrap truncation so long lines never wrap or flood the
+terminal. The **Pipeline** box tracks the spinner, elapsed time, **idle
+seconds since the last event** (your "is it stuck?" signal), current stage
+(triage → hypotheses → poc → firing → report), and checkpoint round; the
+**Log** box tails live tool and assistant activity. If no agent events arrive
+for more than half of `--stall-timeout`, the panel displays a **stall
+warning** before the run is killed. When `--interactive` is on and the agent
+raises a checkpoint, the panel switches to a checkpoint question box with
+one-key choices (`a` approve / `s` skip / `d` deny / `x` stop). Piped or
+redirected output (CI, tests) stays on the plain text path — byte-identical
+to before.
 
 ### Prerequisites
 
@@ -129,10 +137,19 @@ the PoC runs against it in-tree: `node tapfiber/poc/attack.mjs`.
 
 ## Security model
 
-- The agent runs with the tool allowlist above, **but allowlists are prompt
-  level, not a sandbox**: `Bash(node:*)` can reach the network and
-  filesystem, and `codex` ignores `--allowed-tools` entirely (the CLI now
-  says so explicitly instead of implying enforcement).
+- Claude runs with
+  `claude -p --verbose --output-format stream-json --permission-mode dontAsk --setting-sources user`
+  and the default offline tool allowlist (`Bash(node:*)`,
+  `Bash(pg_isready:*)`, `Bash(git:*)`, `Bash(grep:*)`, `Bash(ls:*)`,
+  `Bash(mkdir:*)`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `LS` —
+  deliberately excluding `curl`, `wget`, and `psql`). Unapproved tools fail
+  immediately instead of silently blocking until stall timeout, and
+  `--setting-sources user` prevents project-local `.claude/` settings in an
+  untrusted target repo from overriding permissions or hooks. Codex runs with
+  `codex exec --full-auto --json` and ignores `--allowed-tools` entirely (the
+  CLI says so explicitly instead of implying enforcement).
+- **Allowlists are still prompt/CLI level, not a sandbox**: `Bash(node:*)`
+  can reach the network and filesystem.
 - The target is treated as untrusted *content* — the skill instructs the
   agent to never execute code from the target tree, and PoCs run in the
   workspace — but there is **no OS-level isolation boundary** between the

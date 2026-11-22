@@ -5,7 +5,9 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // TestIsTerminalFalseWhenPiped asserts the panel-stay-disabled condition:
@@ -65,4 +67,44 @@ func TestReadSingleKeyNoTTY(t *testing.T) {
 	if err == nil {
 		t.Error("ReadSingleKey() error = nil, want an error when /dev/tty is absent")
 	}
+}
+
+func TestTerminalSizePositive(t *testing.T) {
+	cols, rows := TerminalSize()
+	if cols <= 0 || rows <= 0 {
+		t.Fatalf("TerminalSize() = (%d, %d), want positive dimensions", cols, rows)
+	}
+	// Under go test stdout is piped, so the fallback 80x24 is expected.
+	if !IsTerminal() && (cols != 80 || rows != 24) {
+		t.Errorf("TerminalSize() when piped = (%d, %d), want (80, 24)", cols, rows)
+	}
+}
+
+func TestWatchResizeStopsCleanly(t *testing.T) {
+	got := make(chan [2]int, 1)
+	stop := WatchResize(func(cols, rows int) {
+		select {
+		case got <- [2]int{cols, rows}:
+		default:
+		}
+	})
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGWINCH); err != nil {
+		stop()
+		t.Fatalf("SIGWINCH kill failed: %v", err)
+	}
+
+	select {
+	case dims := <-got:
+		if dims[0] <= 0 || dims[1] <= 0 {
+			t.Errorf("WatchResize callback received invalid dims (%d, %d)", dims[0], dims[1])
+		}
+	case <-time.After(2 * time.Second):
+		stop()
+		t.Fatal("timed out waiting for WatchResize callback on SIGWINCH")
+	}
+
+	// stop() must be idempotent and terminate the listener goroutine cleanly.
+	stop()
+	stop()
 }
