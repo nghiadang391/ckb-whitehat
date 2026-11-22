@@ -22,3 +22,27 @@ func TestRequiredSections(t *testing.T) {
 		t.Fatalf("%+v", r.Sections)
 	}
 }
+func TestParseFindingsPreservesInnerParens(t *testing.T) {
+	md := "## F2 — Double-spend race in `ledger.js debit()` (HIGH, PROVEN)"
+	got := ParseFindings(md)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 finding, got %+v", got)
+	}
+	wantTitle := "Double-spend race in `ledger.js debit()`"
+	if got[0].ID != "F2" || got[0].Title != wantTitle {
+		t.Fatalf("got %+v, want ID=F2 Title=%q", got[0], wantTitle)
+	}
+}
+func TestParseFindingsMatchesAllCIDs(t *testing.T) {
+	md := "## C1 — baseline control\n## C4.2 — forged callback"
+	got := ParseFindings(md)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 findings, got %+v", got)
+	}
+	if got[0].ID != "C1" || got[0].Title != "baseline control" {
+		t.Fatalf("first finding = %+v", got[0])
+	}
+	if got[1].ID != "C4.2" || got[1].Title != "forged callback" {
+		t.Fatalf("second finding = %+v", got[1])
+	}
+}

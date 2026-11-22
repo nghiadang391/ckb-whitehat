@@ -18,7 +18,9 @@ semantics, and the `FINDING <id>` verdict-line checks.
 ## 1. Goals and non-goals
 
 **Goals**
-- One static binary, stdlib-only (zero external Go modules): `ckb-whitehat`.
+- One static binary (`ckb-whitehat`), stdlib plus only the official
+  `golang.org/x/term` (and indirect `golang.org/x/sys`) for raw TTY
+  single-key input and `term.IsTerminal` detection.
 - URL targets clone into managed disposable storage; dependency installation
   is explicit opt-in via `--install-deps`, never an implicit lifecycle-script
   execution.
@@ -54,8 +56,10 @@ cli/                      deleted
 ```
 
 Go module path: `github.com/nghiadang391/ckb-whitehat` (matches the remote).
-`go.mod` has **no require block** — stdlib only (`os/exec`, `net/http`,
-`os/signal`, `regexp`, `encoding/json`).
+`go.mod` carries only the official `golang.org/x/term` (and its indirect
+`golang.org/x/sys`) dependency for raw TTY single-key input and
+`term.IsTerminal` detection; everything else uses the Go standard library
+(`os/exec`, `net/http`, `os/signal`, `regexp`, `encoding/json`).
 
 ## 3. Commands and exit codes (unchanged contract)
 

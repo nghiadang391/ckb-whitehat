@@ -30,3 +30,14 @@ func TestVerifyFindingsNeedsVerdicts(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 }
+func TestVerifyFiredWithoutFindingsNeedsVerdicts(t *testing.T) {
+	d := t.TempDir()
+	os.WriteFile(filepath.Join(d, "FINDINGS.md"), []byte("long report"), 0600)
+	os.Mkdir(filepath.Join(d, "poc"), 0700)
+	stdout := "CKB-WHITEHAT-RESULT: findings=0 fired=1 report=x"
+	m := LastMarker(stdout)
+	c := VerifyRun(d, stdout, m)
+	if len(c) != 5 || c[2].OK || c[3].OK || c[4].OK {
+		t.Fatalf("expected 5 completeness checks with PoC/verdicts failing, got %+v", c)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -190,6 +191,138 @@ func TestUpdateExplicitRollback(t *testing.T) {
 	if b, _ := os.ReadFile(exe); string(b) != binary {
 		t.Fatal("rollback binary not installed")
 	}
+}
+
+func TestValidateUpdateURL(t *testing.T) {
+	allowed := []string{
+		"https://api.github.com",
+		"https://github.com/org/repo/releases/download/v1.0.0/bin",
+		"http://127.0.0.1:8080/x",
+		"http://localhost:8080/x",
+		"http://LOCALHOST:8080/x",
+		"http://[::1]:8080/x",
+	}
+	for _, raw := range allowed {
+		got, err := validateUpdateURL(raw)
+		if err != nil {
+			t.Errorf("validateUpdateURL(%q) unexpected error: %v", raw, err)
+		}
+		if got == "" {
+			t.Errorf("validateUpdateURL(%q) returned empty URL", raw)
+		}
+	}
+
+	rejected := []string{
+		"http://evil.com/localhost/x",
+		"http://localhost.evil.com/x",
+		"http://evil.com/?q=127.0.0.1",
+		"http://127.0.0.1.evil.com/x",
+		"http://localhost@evil.com/x",
+		"http://evil.com/bin",
+		"file:///etc/passwd",
+		"file://localhost/etc/passwd",
+		"ftp://api.github.com/x",
+		"https://",
+		"https://:8080/x",
+		"",
+	}
+	for _, raw := range rejected {
+		if got, err := validateUpdateURL(raw); err == nil {
+			t.Errorf("validateUpdateURL(%q) = %q, nil; want error", raw, got)
+		}
+	}
+}
+
+func TestUpdateClientCheckRedirect(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/evil", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://evil.com/bin", http.StatusFound)
+	})
+	mux.HandleFunc("/ok-redirect", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/final", http.StatusFound)
+	})
+	mux.HandleFunc("/final", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok-body")
+	})
+	mux.HandleFunc("/loop", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/loop", http.StatusFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := newUpdateHTTPClient()
+
+	// Redirect to non-HTTPS non-loopback host must be blocked before connecting.
+	if _, err := download(client, srv.URL+"/evil"); err == nil {
+		t.Fatal("expected redirect to http://evil.com/bin to be rejected")
+	} else if !strings.Contains(err.Error(), "redirect blocked") {
+		t.Errorf("expected redirect blocked error, got: %v", err)
+	}
+
+	// Redirect to another loopback path on the same test server is allowed.
+	body, err := download(client, srv.URL+"/ok-redirect")
+	if err != nil {
+		t.Fatalf("expected loopback redirect to succeed, got: %v", err)
+	}
+	if string(body) != "ok-body" {
+		t.Errorf("got body %q, want %q", string(body), "ok-body")
+	}
+
+	// Redirect loop must stop after 10 redirects.
+	if _, err := download(client, srv.URL+"/loop"); err == nil {
+		t.Fatal("expected redirect loop to fail after 10 redirects")
+	} else if !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Errorf("expected 10-redirect cap error, got: %v", err)
+	}
+}
+
+func TestShaEntry(t *testing.T) {
+	validHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	upperHash := strings.ToUpper(validHash)
+
+	t.Run("standard", func(t *testing.T) {
+		sums := []byte(validHash + "  ckb-whitehat-linux-amd64\n")
+		got, err := shaEntry(sums, "ckb-whitehat-linux-amd64")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != validHash {
+			t.Errorf("got %q, want %q", got, validHash)
+		}
+	})
+
+	t.Run("binary mode star prefix", func(t *testing.T) {
+		sums := []byte(upperHash + " *ckb-whitehat-linux-amd64\n")
+		got, err := shaEntry(sums, "ckb-whitehat-linux-amd64")
+		if err != nil {
+			t.Fatalf("unexpected error for sha256sum -b format: %v", err)
+		}
+		if got != validHash {
+			t.Errorf("got %q, want %q", got, validHash)
+		}
+	})
+
+	t.Run("rejects short hash", func(t *testing.T) {
+		sums := []byte("0123456789abcdef  ckb-whitehat-linux-amd64\n")
+		if _, err := shaEntry(sums, "ckb-whitehat-linux-amd64"); err == nil {
+			t.Fatal("expected error for short hash")
+		}
+	})
+
+	t.Run("rejects non-hex hash", func(t *testing.T) {
+		nonHex := "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+		sums := []byte(nonHex + "  ckb-whitehat-linux-amd64\n")
+		if _, err := shaEntry(sums, "ckb-whitehat-linux-amd64"); err == nil {
+			t.Fatal("expected error for non-hex hash")
+		}
+	})
+
+	t.Run("rejects missing asset", func(t *testing.T) {
+		sums := []byte(validHash + "  other-asset\n")
+		if _, err := shaEntry(sums, "ckb-whitehat-linux-amd64"); err == nil {
+			t.Fatal("expected error for missing asset")
+		}
+	})
 }
 
 func containsLine(s, sub string) bool {

@@ -71,6 +71,22 @@ func TestRepoDirURLCollision(t *testing.T) {
 	}
 }
 
+func TestRepoDirURLNormalization(t *testing.T) {
+	_, m := twoDirs(t)
+	variants := []string{
+		"https://github.com/duongja/Dular",
+		"https://github.com/duongja/Dular/",
+		"https://github.com/duongja/Dular.git",
+		"https://github.com/duongja/Dular.git/",
+	}
+	want := m.RepoDir(variants[0])
+	for _, v := range variants[1:] {
+		if got := m.RepoDir(v); got != want {
+			t.Fatalf("RepoDir(%q) = %q, want %q", v, got, want)
+		}
+	}
+}
+
 func TestRepoDirLocalPathUnchanged(t *testing.T) {
 	_, m := twoDirs(t)
 	parent := t.TempDir()

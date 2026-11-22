@@ -269,3 +269,58 @@ func TestQuestionPanel(t *testing.T) {
 		t.Errorf("Question with empty detail should have the gate id on its own line: %q", got)
 	}
 }
+
+func TestLivePanelSanitizesEscapesAndNewlines(t *testing.T) {
+	p := NewLivePanel("running\n\x1b[31mclaude\x1b[0m", 3, 0)
+	p.OnLine("\x1b[31mRED\x1b[0m\x1b[2J\nline2")
+	p.OnLine("\x1b]0;evil\x07ok\r\x1b]52;c;cHduZWQ=\x1b\\tail")
+
+	rendered := p.Render()
+	for _, forbidden := range []string{"\x1b", "31m", "2J", "0;evil", "52;c;cHduZWQ="} {
+		if strings.Contains(rendered, forbidden) {
+			t.Errorf("Render leaked escape fragment %q in %q", forbidden, rendered)
+		}
+	}
+	for _, want := range []string{"running claude", "RED line2", "ok tail"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("Render missing sanitized content %q in %q", want, rendered)
+		}
+	}
+	actualLines := strings.Count(rendered, "\n")
+	if actualLines != p.renderedLines {
+		t.Errorf("strings.Count(rendered, \\n) = %d, renderedLines = %d", actualLines, p.renderedLines)
+	}
+	if teardown, want := p.Teardown(), fmt.Sprintf("\x1b[%dA\x1b[J", actualLines); teardown != want {
+		t.Errorf("Teardown = %q, want %q", teardown, want)
+	}
+
+	p.SetGate("triage\x1b[31m\nextra", "\x1b]0;title\x07check\n\x1b]52;c;cHduZWQ=\x1b\\\x1b[?25lnow")
+	rendered = p.Render()
+	for _, forbidden := range []string{"\x1b", "31m", "0;title", "52;c;cHduZWQ=", "?25l"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Errorf("gate Render leaked escape fragment %q in %q", forbidden, rendered)
+		}
+	}
+	for _, want := range []string{"triage extra", "check now"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("gate Render missing sanitized content %q in %q", want, rendered)
+		}
+	}
+	actualLines = strings.Count(rendered, "\n")
+	if actualLines != p.renderedLines {
+		t.Errorf("gate strings.Count(rendered, \\n) = %d, renderedLines = %d", actualLines, p.renderedLines)
+	}
+	if teardown, want := p.Teardown(), fmt.Sprintf("\x1b[%dA\x1b[J", actualLines); teardown != want {
+		t.Errorf("gate Teardown = %q, want %q", teardown, want)
+	}
+
+	q := p.Question("triage\x1b[31m\nbad", "\x1b]52;c;cHduZWQ=\x1b\\ok\nline2")
+	for _, forbidden := range []string{"\x1b", "31m", "52;c;cHduZWQ="} {
+		if strings.Contains(q, forbidden) {
+			t.Errorf("Question leaked escape fragment %q in %q", forbidden, q)
+		}
+	}
+	if gotLines := strings.Count(q, "\n"); gotLines != 3 {
+		t.Errorf("Question line count = %d, want 3: %q", gotLines, q)
+	}
+}

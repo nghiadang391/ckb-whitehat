@@ -18,8 +18,8 @@ type Section struct {
 	Present bool
 }
 
-var findingRE = regexp.MustCompile(`(?m)^#{2,3}\s+((?:F|S|C4)\d+(?:\.\d+)?)\s*[—-]\s*(.+)$`)
-var parenSuffixRE = regexp.MustCompile(`\s*\(.*\)$`)
+var findingRE = regexp.MustCompile(`(?m)^#{2,3}\s+((?:F|S|C)\d+(?:\.\d+)?)\s*[—-]\s*(.+)$`)
+var parenSuffixRE = regexp.MustCompile(`\s*\([^()]*\)$`)
 var required = []string{"## At a glance", "On-chain evidence", "Layer boundary", "Honest limitations"}
 
 func ParseFindings(md string) []Finding {

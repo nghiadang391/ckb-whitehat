@@ -19,17 +19,22 @@ func TestIsTerminalFalseWhenPiped(t *testing.T) {
 	}
 }
 
-// TestIsTerminalTrueForCharDevice is the regression test for the S_IFCHR
-// bug: os.FileMode packs the char-device bit as os.ModeCharDevice, so the
-// check must key on os.ModeCharDevice, not the raw stat S_IFCHR value.
-func TestIsTerminalTrueForCharDevice(t *testing.T) {
+// TestIsTerminalFalseForDevNullAndRegularFile asserts that non-TTY character
+// devices such as /dev/null and regular files are rejected by fileIsTerminal
+// (which uses term.IsTerminal / TCGETS ioctl rather than os.ModeCharDevice),
+// so `ckb-whitehat run >/dev/null` does not enable the live TTY box.
+func TestIsTerminalFalseForDevNullAndRegularFile(t *testing.T) {
+	if fileIsTerminal(nil) {
+		t.Error("fileIsTerminal(nil) = true, want false")
+	}
+
 	f, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
 	if err != nil {
 		t.Skipf("/dev/null unavailable: %v", err)
 	}
 	defer f.Close()
-	if !fileIsTerminal(f) {
-		t.Error("fileIsTerminal(/dev/null) = false, want true: /dev/null is a character device")
+	if fileIsTerminal(f) {
+		t.Error("fileIsTerminal(/dev/null) = true, want false: /dev/null is a character device, not a TTY")
 	}
 
 	reg, err := os.Create(filepath.Join(t.TempDir(), "regular"))

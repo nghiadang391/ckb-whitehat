@@ -44,7 +44,7 @@ const historyLimit = 200
 func NewLivePanel(header string, maxRounds int, stallLimit time.Duration) *LivePanel {
 	now := time.Now()
 	return &LivePanel{
-		header:       header,
+		header:       gates.SanitizeSingleLine(header),
 		maxRounds:    maxRounds,
 		round:        1,
 		stallLimit:   stallLimit,
@@ -78,7 +78,7 @@ func (p *LivePanel) Restart() {
 func (p *LivePanel) OnLine(line string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	line = gates.SanitizeTerminal(line)
+	line = gates.SanitizeSingleLine(line)
 	p.history = append(p.history, line)
 	if len(p.history) > historyLimit {
 		p.history = p.history[len(p.history)-historyLimit:]
@@ -90,12 +90,12 @@ func (p *LivePanel) OnLine(line string) {
 // clears it when gateID == "". The orchestrator calls this when a gate
 // checkpoint opens and closes again; mutex-guarded like the rest. Details
 // is agent-supplied and is sanitized here so the question view can't
-// carry terminal escapes to the screen.
+// carry terminal escapes or embedded newlines to the screen.
 func (p *LivePanel) SetGate(gateID, detail string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.gateID = gates.SanitizeTerminal(gateID)
-	p.gateDet = gates.SanitizeTerminal(detail)
+	p.gateID = gates.SanitizeSingleLine(gateID)
+	p.gateDet = gates.SanitizeSingleLine(detail)
 }
 
 // ForceIdleForTest backdates lastOutputAt by d so tests can exercise the
@@ -227,6 +227,8 @@ func (p *LivePanel) Teardown() string {
 // Render reuses the same question text in its gate lower panel; Question
 // remains for callers that paint the question as a plain block.
 func (p *LivePanel) Question(gateID, detail string) string {
+	gateID = gates.SanitizeSingleLine(gateID)
+	detail = gates.SanitizeSingleLine(detail)
 	var b strings.Builder
 	b.WriteString("── checkpoint " + strings.Repeat("─", 30) + "\n")
 	b.WriteString(gateID)
