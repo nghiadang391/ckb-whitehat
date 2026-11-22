@@ -4,7 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/nghiadang391/ckb-whitehat/internal/workspace"
 )
 
 // TestMain builds the binary once; exit-code tests exec it.
@@ -103,6 +106,7 @@ func TestDefaultAllowedToolsSafeOfflineSet(t *testing.T) {
 		"Bash(grep:*)",
 		"Bash(ls:*)",
 		"Bash(mkdir:*)",
+		"Bash(cd:*)",
 		"Read",
 		"Write",
 		"Edit",
@@ -114,12 +118,68 @@ func TestDefaultAllowedToolsSafeOfflineSet(t *testing.T) {
 			t.Errorf("defaultAllowedTools missing %q: %v", want, defaultAllowedTools)
 		}
 	}
-	for _, forbidden := range []string{"curl", "wget", "psql"} {
+	for _, forbidden := range []string{"curl", "wget", "psql", "env"} {
 		for _, tool := range defaultAllowedTools {
 			if strContains(tool, forbidden) {
 				t.Errorf("defaultAllowedTools must exclude %q, found %q", forbidden, tool)
 			}
 		}
+	}
+}
+
+func TestBuildPromptDepsState(t *testing.T) {
+	ws := t.TempDir()
+
+	t.Run("package.json without node_modules reports deps NOT installed", func(t *testing.T) {
+		target := t.TempDir()
+		if err := os.WriteFile(filepath.Join(target, "package.json"), []byte(`{"name":"demo"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+		p := buildPrompt(ws, workspace.Config{Target: target, Scope: []string{"app"}}, false, nil)
+		if !strings.Contains(p, "target dependencies are NOT installed") {
+			t.Fatalf("expected missing-deps notice in prompt, got:\n%s", p)
+		}
+		if strings.Contains(p, "dependencies are already installed") {
+			t.Fatalf("prompt must not falsely claim deps are installed")
+		}
+		if !strings.Contains(p, "node poc/<file>.mjs") {
+			t.Fatalf("expected workspace-root PoC run guidance in prompt")
+		}
+	})
+
+	t.Run("package.json with node_modules reports installed path", func(t *testing.T) {
+		target := t.TempDir()
+		if err := os.WriteFile(filepath.Join(target, "package.json"), []byte(`{"name":"demo"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(target, "node_modules"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		p := buildPrompt(ws, workspace.Config{Target: target, Scope: []string{"app"}}, false, nil)
+		wantPath := filepath.Join(target, "node_modules")
+		if !strings.Contains(p, "target dependencies are installed at "+wantPath) {
+			t.Fatalf("expected installed-deps path %q in prompt, got:\n%s", wantPath, p)
+		}
+	})
+
+	t.Run("non-node repo omits npm deps line", func(t *testing.T) {
+		target := t.TempDir()
+		p := buildPrompt(ws, workspace.Config{Target: target, Scope: []string{"app"}}, false, nil)
+		if strings.Contains(p, "target dependencies are") {
+			t.Fatalf("expected no npm deps line for repo without package.json")
+		}
+	})
+}
+
+func TestWithNodePath(t *testing.T) {
+	got := withNodePath([]string{"A=1"}, "/repo/node_modules")
+	if len(got) != 2 || got[1] != "NODE_PATH=/repo/node_modules" {
+		t.Fatalf("absent NODE_PATH: got %v", got)
+	}
+	got = withNodePath([]string{"A=1", "NODE_PATH=/existing", "B=2"}, "/repo/node_modules")
+	want := "NODE_PATH=/repo/node_modules" + string(os.PathListSeparator) + "/existing"
+	if len(got) != 3 || got[1] != want {
+		t.Fatalf("existing NODE_PATH: got %v, want[1]=%q", got, want)
 	}
 }
 
@@ -317,5 +377,75 @@ echo "CKB-WHITEHAT-RESULT: findings=0 fired=0 report=$ws/FINDINGS.md"
 		"run", target, "--agent", "claude", "--stall-timeout", "60")
 	if code != 0 {
 		t.Fatalf("clean run code=%d, want 0:\n%s", code, out)
+	}
+}
+
+func TestRunLogCapturesStreamActivityAndWarnsOnMissingNodeModules(t *testing.T) {
+	home := t.TempDir()
+	fakebin := t.TempDir()
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "package.json"), []byte(`{"name":"demo"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := filepath.Join(fakebin, "claude")
+	const script = `#!/bin/sh
+ws="$CKB_WHITEHAT_WORKSPACE"
+cat > "$ws/FINDINGS.md" <<'EOF'
+# ckb-whitehat — stream-activity
+Target: fake repo. No network.
+
+## At a glance
+No findings. Triage covered auth, parsing, ledger, and config cleanly with no
+exploitable findings produced under offline verification.
+
+## On-chain evidence
+N/A — target has no on-chain/persistent-asset interaction.
+
+## Layer boundary
+n/a
+
+## Honest limitations
+- target has no node_modules installed
+EOF
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"NODE_PATH=/x node poc/f1.mjs"}}]}}'
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"u1","is_error":true,"content":"Permission to use Bash has been denied because Claude is running in dontAsk mode."}]}}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"CKB-WHITEHAT-RESULT: findings=0 fired=0 report='"$ws"'/FINDINGS.md"}]}}'
+`
+	if err := os.WriteFile(fake, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := map[string]string{"HOME": home, "PATH": fakebin + string(os.PathListSeparator) + os.Getenv("PATH")}
+	initCode, initOut := runBin(t, env, "init", target)
+	if initCode != 0 {
+		t.Fatalf("init code=%d out=%s", initCode, initOut)
+	}
+	if !strings.Contains(initOut, "no node_modules") {
+		t.Fatalf("expected missing node_modules warning during init, got:\n%s", initOut)
+	}
+
+	code, out := runBin(t, env, "run", target, "--agent", "claude", "--stall-timeout", "60")
+	if code != 0 {
+		t.Fatalf("run code=%d, want 0:\n%s", code, out)
+	}
+	if !strings.Contains(out, "no node_modules") {
+		t.Fatalf("expected missing node_modules warning during run, got:\n%s", out)
+	}
+
+	logPath := filepath.Join(workspace.New(home).Workspace(target), "run.log")
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("reading run.log: %v", err)
+	}
+	logStr := string(logBytes)
+	for _, want := range []string{
+		"--- activity ---",
+		"→ Bash NODE_PATH=/x node poc/f1.mjs",
+		"⚠ permission denied: Permission to use Bash has been denied because Claude is running in dontAsk mode.",
+	} {
+		if !strings.Contains(logStr, want) {
+			t.Fatalf("run.log missing %q:\n%s", want, logStr)
+		}
 	}
 }

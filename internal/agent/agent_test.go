@@ -287,6 +287,9 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"F
 	if strings.Contains(res.Stdout, "→ Bash") || strings.Contains(res.Stdout, `"type":"system"`) {
 		t.Fatalf("res.Stdout should contain clean prose only, got %q", res.Stdout)
 	}
+	if res.Activity != "→ Bash cargo test --nocapture\n" {
+		t.Fatalf("res.Activity:\ngot:  %q\nwant: %q", res.Activity, "→ Bash cargo test --nocapture\n")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()

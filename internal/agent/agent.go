@@ -29,6 +29,7 @@ type Spec struct {
 type Result struct {
 	Code              int
 	Stdout, Stderr    string
+	Activity          string
 	Stalled, TimedOut bool
 }
 
@@ -214,15 +215,16 @@ func SpawnWithObserver(ctx context.Context, s Spec, argv []string, env []string,
 
 	// snapshot returns the decoded plain-text stdout (falling back to raw
 	// stdout if nothing plain-text was extracted so crash diagnostics are
-	// never lost) and stderr, safely synchronized under mu.
-	snapshot := func() (string, string) {
+	// never lost), stderr, and structured tool/permission activity, safely
+	// synchronized under mu.
+	snapshot := func() (string, string, string) {
 		mu.Lock()
 		defer mu.Unlock()
 		stdout := parser.PlainText()
 		if stdout == "" {
 			stdout = out.String()
 		}
-		return stdout, errbuf.String()
+		return stdout, errbuf.String(), parser.Activity()
 	}
 
 	for {
@@ -238,31 +240,31 @@ func SpawnWithObserver(ctx context.Context, s Spec, argv []string, env []string,
 				}
 			}
 			outF.flushTail()
-			stdout, stderr := snapshot()
-			return Result{Code: code, Stdout: stdout, Stderr: stderr}, nil
+			stdout, stderr, activity := snapshot()
+			return Result{Code: code, Stdout: stdout, Stderr: stderr, Activity: activity}, nil
 		case <-tick.C:
 			if outF.idle() > stall {
 				killProcess(cmd)
 				drainDone(done)
-				stdout, stderr := snapshot()
-				return Result{Code: 1, Stdout: stdout, Stderr: stderr, Stalled: true}, nil
+				stdout, stderr, activity := snapshot()
+				return Result{Code: 1, Stdout: stdout, Stderr: stderr, Activity: activity, Stalled: true}, nil
 			}
 			if time.Since(started) > max {
 				killProcess(cmd)
 				drainDone(done)
-				stdout, stderr := snapshot()
-				return Result{Code: 1, Stdout: stdout, Stderr: stderr, TimedOut: true}, nil
+				stdout, stderr, activity := snapshot()
+				return Result{Code: 1, Stdout: stdout, Stderr: stderr, Activity: activity, TimedOut: true}, nil
 			}
 		case <-deadline.C:
 			killProcess(cmd)
 			drainDone(done)
-			stdout, stderr := snapshot()
-			return Result{Code: 1, Stdout: stdout, Stderr: stderr, TimedOut: true}, nil
+			stdout, stderr, activity := snapshot()
+			return Result{Code: 1, Stdout: stdout, Stderr: stderr, Activity: activity, TimedOut: true}, nil
 		case <-cctx.Done():
 			killProcess(cmd)
 			drainDone(done)
-			stdout, stderr := snapshot()
-			return Result{Code: 1, Stdout: stdout, Stderr: stderr}, cctx.Err()
+			stdout, stderr, activity := snapshot()
+			return Result{Code: 1, Stdout: stdout, Stderr: stderr, Activity: activity}, cctx.Err()
 		}
 	}
 }
