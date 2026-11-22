@@ -140,13 +140,16 @@ func urlSlug(spec string) string {
 			host = s
 		}
 	}
+	// Normalize trailing slashes before stripping a trailing ".git" suffix so
+	// URL variants with or without ".git" and trailing "/" produce the exact
+	// same slug and SHA-256 suffix.
+	path = strings.TrimRight(path, "/")
+	path = strings.TrimSuffix(path, ".git")
+	path = strings.TrimRight(path, "/")
+
 	parts := []string{slugify(host)}
-	segs := strings.Split(path, "/")
-	if len(segs) > 0 {
-		segs[len(segs)-1] = strings.TrimSuffix(segs[len(segs)-1], ".git")
-	}
-	for _, seg := range segs {
-		if seg = slugify(seg); seg != "" && seg != ".git" {
+	for _, seg := range strings.Split(path, "/") {
+		if seg = slugify(seg); seg != "" {
 			parts = append(parts, seg)
 		}
 	}
@@ -154,8 +157,7 @@ func urlSlug(spec string) string {
 	if base == "" {
 		base = "repo"
 	}
-	np := strings.TrimSuffix(strings.TrimSuffix(path, ".git"), "/")
-	sum := sha256.Sum256([]byte(strings.ToLower(host) + "/" + strings.ToLower(np)))
+	sum := sha256.Sum256([]byte(strings.ToLower(host) + "/" + strings.ToLower(path)))
 	return base + "-" + hex.EncodeToString(sum[:])[:6]
 }
 
@@ -236,13 +238,22 @@ func (m Manager) ResolveTargetOpts(spec string, ro ResolveOpts) (string, Config,
 			return "", Config{}, err
 		}
 		// H1.4: harden against an untrusted target repo's .git — disable
-		// hook execution (post-checkout hooks), the fsmonitor binary, and
-		// symlink creation from cloned content.
-		args := []string{"clone", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.symlinks=false"}
+		// hook execution (post-checkout hooks), the fsmonitor binary,
+		// symlink creation from cloned content, the ext:: transport helper,
+		// and automatic submodule recursion; "--" prevents spec from being
+		// parsed as a git option.
+		args := []string{
+			"clone",
+			"-c", "core.hooksPath=/dev/null",
+			"-c", "core.fsmonitor=false",
+			"-c", "core.symlinks=false",
+			"-c", "protocol.ext.allow=never",
+			"--no-recurse-submodules",
+		}
 		if ro.Depth > 0 {
 			args = append(args, "--depth", fmt.Sprint(ro.Depth))
 		}
-		args = append(args, spec, dir)
+		args = append(args, "--", spec, dir)
 		cmd := exec.Command("git", args...)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {

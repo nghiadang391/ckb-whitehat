@@ -16,14 +16,28 @@ import (
 
 const prefix = "CKB-WHITEHAT-GATE:"
 
-var gateLine = regexp.MustCompile(`(?m)^CKB-WHITEHAT-GATE:\s*([A-Za-z0-9._-]+)(?:\s+(.*))?$`)
+var gateLine = regexp.MustCompile(`(?m)^CKB-WHITEHAT-GATE:[ \t]*([A-Za-z0-9._-]+)(?:[ \t]+([^\r\n]*))?\r?$`)
 
-// ansiRe matches ANSI/VT escape sequences (CSI, OSC, and other ESC-introduced
-// sequences) so they can be stripped from untrusted agent text before it
-// reaches a TTY. A hostile target repo can emit escape bytes in stdout; if we
-// printed them raw they'd drive the user's terminal (cursor/erase/OSC) — a
-// terminal-injection vector (audit H4.2).
-var ansiRe = regexp.MustCompile("\x1b(?:\\[[0-9;?]*[ -/][@-~]|\\][^\x1b\x07]*(?:\x07|\x1b\\())|[\x00-\x08\x0b-\x1f\x7f]")
+// validGateIDs restricts Parse to the skill-defined human checkpoints so
+// untrusted agent output cannot invent arbitrary gate IDs.
+var validGateIDs = map[string]bool{
+	"triage":     true,
+	"permission": true,
+	"publish":    true,
+}
+
+// ansiRe matches ANSI/VT escape sequences (7-bit and 8-bit CSI and OSC) plus
+// remaining C0, DEL, and C1 control characters so they can be stripped from
+// untrusted agent text before it reaches a TTY. A hostile target repo can emit
+// escape bytes in stdout; if we printed them raw they'd drive the user's
+// terminal (cursor/erase/OSC) — a terminal-injection vector (audit H4.2/N1).
+var ansiRe = regexp.MustCompile(
+	"(?:\x1b\\[|\u009b)[0-?]*[ -/]*[@-~]" +
+		"|(?:\x1b\\]|\u009d)[^\x07\x1b\u009c]*(?:\x07|\x1b\\\\|\u009c)" +
+		"|[\x00-\x08\x0b-\x1f\x7f\u0080-\u009f]",
+)
+
+var singleLineReplacer = strings.NewReplacer("\r", " ", "\n", " ", "\t", " ")
 
 // SanitizeTerminal strips terminal control/escape sequences from s so it is
 // safe to print to a TTY. The gate ID is already constrained to a safe charset
@@ -41,6 +55,14 @@ func SanitizeTerminal(s string) string {
 	}, s)
 }
 
+// SanitizeSingleLine strips terminal escape/control sequences and replaces
+// \r, \n, and \t with single spaces so embedded newlines cannot break bordered
+// TUI rows or desynchronize LivePanel.renderedLines.
+func SanitizeSingleLine(s string) string {
+	s = singleLineReplacer.Replace(s)
+	return SanitizeTerminal(s)
+}
+
 // Gate is a checkpoint requested by the agent. Details is opaque display data.
 type Gate struct {
 	ID      string `json:"id"`
@@ -55,11 +77,16 @@ type Decision struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// Parse returns all structured gate requests in output, preserving order.
+// Parse returns all structured gate requests in output for the skill-defined
+// checkpoints (triage, permission, publish), preserving order. Unknown gate
+// IDs are ignored.
 func Parse(output string) []Gate {
 	matches := gateLine.FindAllStringSubmatch(output, -1)
 	gates := make([]Gate, 0, len(matches))
 	for _, m := range matches {
+		if !validGateIDs[m[1]] {
+			continue
+		}
 		gates = append(gates, Gate{ID: m[1], Details: strings.TrimSpace(m[2])})
 	}
 	return gates

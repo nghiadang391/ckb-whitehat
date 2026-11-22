@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -64,30 +65,28 @@ func updateCmd(a []string) int {
 		apiBase = "https://api.github.com"
 	}
 	// A non-HTTPS API base would let a mirror serve release metadata over an
-	// open channel — the checksums would be untrusted too (audit M2.1).
-	// Allow plain http only for a localhost test mirror.
-	if !strings.HasPrefix(apiBase, "http") {
-		apiBase = "https://" + apiBase
-	}
-	if !strings.HasPrefix(apiBase, "https://") && !strings.Contains(apiBase, "127.0.0.1") && !strings.Contains(apiBase, "localhost") {
-		die("update: CKB_WHITEHAT_UPDATE_API must be https (or a localhost test mirror)", 1)
+	// open channel — the checksums would be untrusted too (audit M2.1, N2).
+	// Allow plain http only for exact loopback hosts (used by tests).
+	validAPIBase, err := validateUpdateURL(apiBase)
+	if err != nil {
+		die("update: invalid CKB_WHITEHAT_UPDATE_API: "+err.Error(), 1)
 	}
 
-	url := apiBase + "/repos/" + repo + "/releases/"
+	releaseURL := strings.TrimRight(validAPIBase, "/") + "/repos/" + repo + "/releases/"
 	if target == "" {
-		url += "latest"
+		releaseURL += "latest"
 	} else {
-		url += "tags/" + target
+		releaseURL += "tags/" + target
 	}
-	client := &http.Client{Timeout: 5 * time.Minute}
-	res, err := client.Get(url)
+	client := newUpdateHTTPClient()
+	res, err := client.Get(releaseURL)
 	if err != nil {
 		die("update: cannot reach the release API: "+err.Error(), 1)
 	}
 	defer res.Body.Close()
 	switch {
 	case res.StatusCode == http.StatusNotFound:
-		die("update: no such release: "+url, 1)
+		die("update: no such release: "+releaseURL, 1)
 	case res.StatusCode != http.StatusOK:
 		die("update: release API returned "+res.Status, 1)
 	}
@@ -128,10 +127,18 @@ func updateCmd(a []string) int {
 	if binURL == "" || sumsURL == "" {
 		die("update: release "+rel.TagName+" is missing the "+name+" or sha256sums.txt asset", 1)
 	}
-
-	sumsBody, err := download(client, ensureHTTPS(sumsURL))
+	validSumsURL, err := validateUpdateURL(sumsURL)
 	if err != nil {
-		die("update: download "+sumsURL+": "+err.Error(), 1)
+		die("update: invalid sha256sums.txt URL: "+err.Error(), 1)
+	}
+	validBinURL, err := validateUpdateURL(binURL)
+	if err != nil {
+		die("update: invalid binary asset URL: "+err.Error(), 1)
+	}
+
+	sumsBody, err := download(client, validSumsURL)
+	if err != nil {
+		die("update: download "+validSumsURL+": "+err.Error(), 1)
 	}
 	want, err := shaEntry(sumsBody, name)
 	if err != nil {
@@ -143,7 +150,7 @@ func updateCmd(a []string) int {
 		die("update: "+err.Error(), 1)
 	}
 	fmt.Printf("update: current %s -> target %s\n", version, rel.TagName)
-	staged, err := installVerified(client, binURL, want, exe, name)
+	staged, err := installVerified(client, validBinURL, want, exe, name)
 	if err != nil {
 		die("update: "+err.Error(), 1)
 	}
@@ -158,9 +165,13 @@ func updateCmd(a []string) int {
 }
 
 func installVerified(client *http.Client, binURL, wantHash, exe, assetName string) (staged bool, err error) {
-	body, err := download(client, ensureHTTPS(binURL))
+	validBinURL, err := validateUpdateURL(binURL)
 	if err != nil {
-		return false, fmt.Errorf("download %s: %w", binURL, err)
+		return false, fmt.Errorf("invalid binary URL: %w", err)
+	}
+	body, err := download(client, validBinURL)
+	if err != nil {
+		return false, fmt.Errorf("download %s: %w", validBinURL, err)
 	}
 	got, err := shaOf(body)
 	if err != nil {
@@ -212,19 +223,62 @@ func installVerified(client *http.Client, binURL, wantHash, exe, assetName strin
 	return false, nil
 }
 
-// ensureHTTPS forces an https URL unless it already points at a localhost
-// mirror (used by tests). Downloading a release asset over plain http is a
-// supply-chain risk (audit M2.1).
-func ensureHTTPS(u string) string {
-	if strings.HasPrefix(u, "http://") && !strings.Contains(u, "127.0.0.1") && !strings.Contains(u, "localhost") {
-		return "https://" + strings.TrimPrefix(u, "http://")
+// newUpdateHTTPClient returns an HTTP client whose redirect policy enforces
+// validateUpdateURL on every hop and caps redirects at 10 (audit N2, M2).
+func newUpdateHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 5 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			if _, err := validateUpdateURL(req.URL.String()); err != nil {
+				return fmt.Errorf("redirect blocked: %w", err)
+			}
+			return nil
+		},
 	}
-	return u
 }
 
-// download fetches url and returns the body; non-200 is an error.
-func download(client *http.Client, url string) ([]byte, error) {
-	res, err := client.Get(url)
+// validateUpdateURL enforces that update API endpoints, release asset URLs,
+// and redirect targets use https, or plain http strictly for loopback hosts
+// (used by local tests). Unlike substring matching or silent scheme rewriting,
+// non-HTTPS non-loopback URLs and unsupported schemes are rejected outright
+// (audit N2, M2.1).
+func validateUpdateURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL %q: %w", raw, err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return "", fmt.Errorf("unsupported URL scheme %q in %q (must be https or loopback http)", u.Scheme, raw)
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return "", fmt.Errorf("URL %q must include a host", raw)
+	}
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		return "", fmt.Errorf("non-HTTPS URL %q is not allowed (plain http is restricted to loopback hosts)", raw)
+	}
+	return u.String(), nil
+}
+
+// isLoopbackHost reports whether host is an exact loopback hostname or IP.
+func isLoopbackHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
+}
+
+// download fetches rawURL after validating it and returns the body; non-200 is an error.
+func download(client *http.Client, rawURL string) ([]byte, error) {
+	validURL, err := validateUpdateURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	res, err := client.Get(validURL)
 	if err != nil {
 		return nil, err
 	}

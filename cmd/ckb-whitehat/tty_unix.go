@@ -9,21 +9,21 @@ import (
 	"golang.org/x/term"
 )
 
-// IsTerminal reports whether os.Stdout is a character device (a TTY). Any
-// error means the live panel stays disabled. NOTE: os.FileMode packs the
-// char-device bit as os.ModeCharDevice; it is NOT the raw stat S_IFCHR value,
-// so the check must use os.ModeCharDevice.
+// IsTerminal reports whether os.Stdout is an actual terminal (TTY). Any error
+// or non-TTY descriptor keeps the live panel disabled. We use term.IsTerminal
+// (which performs a TCGETS ioctl) rather than os.ModeCharDevice because
+// /dev/null is also a character device and `ckb-whitehat run >/dev/null` must
+// NOT enable the live TTY box.
 func IsTerminal() bool {
 	return fileIsTerminal(os.Stdout)
 }
 
 // fileIsTerminal is the testable core of IsTerminal.
 func fileIsTerminal(f *os.File) bool {
-	fi, err := f.Stat()
-	if err != nil {
+	if f == nil {
 		return false
 	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(f.Fd()))
 }
 
 // ReadSingleKey blocks reading one byte from /dev/tty in raw mode and returns

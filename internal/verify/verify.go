@@ -40,7 +40,7 @@ func VerifyRun(workspace, stdout string, marker *Marker) []Check {
 		{What: "report exists and is non-trivial: " + reportPath, OK: len([]rune(trimSpace(report))) > 200},
 		{What: "agent printed the CKB-WHITEHAT-RESULT: marker", OK: marker != nil},
 	}
-	if marker != nil && marker.Findings > 0 {
+	if marker != nil && (marker.Findings > 0 || marker.Fired > 0) {
 		entries, _ := os.ReadDir(pocDir)
 		files := 0
 		for _, entry := range entries {
