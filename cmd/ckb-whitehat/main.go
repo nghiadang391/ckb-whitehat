@@ -12,9 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nghiadang391/ckb-whitehat/internal/agent"
@@ -30,16 +32,26 @@ import (
 // Local development builds intentionally report "dev".
 var version = "dev"
 
-// Default allowlist: offline PoC execution only.
-// Deliberately NOT included: curl (a hostile README could steer the agent into
-// exfiltrating local files to an attacker URL, and the challenge forbids
-// live third-party calls), psql (could hit a production database). Both are
-// one flag away for PoC classes that genuinely need them:
+// Default allowlist: offline triage, workspace management, and PoC execution.
+// Includes the safe local shell commands that SKILL.md asks for (node,
+// pg_isready, git, grep, ls, mkdir) plus the built-in file tools.
+//
+// Deliberately NOT included: curl and wget (a hostile README could steer the
+// agent into exfiltrating local files to an attacker URL, and the challenge
+// forbids live third-party calls), and psql (could hit a production database).
+// Claude now runs with --permission-mode dontAsk + --output-format stream-json
+// + --setting-sources user, so unapproved tools fail immediately with a
+// visible TUI error instead of silently blocking until stall timeout. Extra
+// tools are one flag away for PoC classes that genuinely need them:
 //
 //	--allowed-tools "Bash(node:*),Bash(curl:*),Bash(psql:*),Read,Write,Edit,Grep,Glob,LS"
 var defaultAllowedTools = []string{
 	"Bash(node:*)",
 	"Bash(pg_isready:*)",
+	"Bash(git:*)",
+	"Bash(grep:*)",
+	"Bash(ls:*)",
+	"Bash(mkdir:*)",
 	"Read",
 	"Write",
 	"Edit",
@@ -397,7 +409,11 @@ func onchainAnswer(onchain bool) string {
 }
 
 func runCmd(a []string) int {
-	ctx := context.Background()
+	// Cancel cleanly on Ctrl-C (portable across Unix and Windows) so an
+	// interrupt kills the child process group, tears down the live panel,
+	// and restores the terminal cursor (\x1b[?25h) before exiting.
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stopSignals()
 	m := workspace.New("")
 	spec := targetFrom(a)
 	// Re-resolve a URL target (re-cloning if its managed dir was cleaned) so
@@ -497,23 +513,44 @@ func runCmd(a []string) int {
 	// The live panel and its repaint timer exist only when stdout is a
 	// terminal; piped/redirected output stays byte-identical to the plain path.
 	panelActive := IsTerminal()
+	var paintMu sync.Mutex
+	var panelVisible bool
 	var panel *LivePanel
 	if panelActive {
-		panel = NewLivePanel(fmt.Sprintf("running %s against %s", agentSpec.Name, cfg.Target), maxGateRounds, stall)
+		panel = NewLivePanel(fmt.Sprintf("%s · %s", agentSpec.Name, filepath.Base(cfg.Target)), maxGateRounds, stall)
+		panel.SetSize(TerminalSize())
+		stopResize := WatchResize(func(cols, rows int) {
+			paintMu.Lock()
+			defer paintMu.Unlock()
+			panel.SetSize(cols, rows)
+			if panelVisible {
+				_, _ = os.Stdout.WriteString(panel.Teardown() + panel.Render())
+			}
+		})
+		defer stopResize()
 	}
 	for round := 0; round < maxGateRounds; round++ {
+		if ctx.Err() != nil {
+			fmt.Fprintln(os.Stderr, "\ninterrupted")
+			return 1
+		}
 		// One repaint loop per round. A stopped ticker never ticks again, so
 		// each round owns a fresh one; we also wait for the painter to
 		// finish before clearing the panel, so a stop never leaves a torn
-		// frame behind.
+		// frame behind. All stdout panel writes hold paintMu so SIGWINCH
+		// resize repaints and 100ms ticker repaints never interleave.
 		var ticker *time.Ticker
 		var stopRepaint, repaintDone chan struct{}
 		if panelActive {
+			paintMu.Lock()
 			panel.SetRound(round + 1)
 			panel.Restart()
-			os.Stdout.WriteString(panel.Teardown())
+			panel.SetSize(TerminalSize())
+			_, _ = os.Stdout.WriteString(panel.Teardown())
 			fmt.Print("\x1b[?25l") // hide the cursor while repainting
 			_, _ = os.Stdout.WriteString(panel.Render())
+			panelVisible = true
+			paintMu.Unlock()
 			ticker = time.NewTicker(100 * time.Millisecond)
 			stopRepaint, repaintDone = make(chan struct{}), make(chan struct{})
 			go func() {
@@ -523,7 +560,15 @@ func runCmd(a []string) int {
 					case <-stopRepaint:
 						return
 					case <-ticker.C:
-						_, _ = os.Stdout.WriteString(panel.Teardown() + panel.Render())
+						paintMu.Lock()
+						if panelVisible {
+							// Refresh terminal size on each tick too so
+							// terminals/multiplexers without SIGWINCH stay
+							// responsive.
+							panel.SetSize(TerminalSize())
+							_, _ = os.Stdout.WriteString(panel.Teardown() + panel.Render())
+						}
+						paintMu.Unlock()
 					}
 				}
 			}()
@@ -540,8 +585,15 @@ func runCmd(a []string) int {
 			close(stopRepaint)
 			<-repaintDone
 			ticker.Stop()
-			os.Stdout.WriteString(panel.Teardown())
+			paintMu.Lock()
+			panelVisible = false
+			_, _ = os.Stdout.WriteString(panel.Teardown())
 			fmt.Print("\x1b[?25h") // show the cursor again
+			paintMu.Unlock()
+		}
+		if ctx.Err() != nil {
+			fmt.Fprintln(os.Stderr, "\ninterrupted")
+			return 1
 		}
 		if err != nil {
 			die(err.Error(), 1)
@@ -582,7 +634,7 @@ func runCmd(a []string) int {
 			var d gates.Decision
 			var err error
 			if panelActive {
-				d, err = resolveGatePanel(store, panel, g)
+				d, err = resolveGatePanel(store, panel, g, &paintMu, &panelVisible)
 			} else {
 				d, err = resolveGate(store, g, true)
 			}
@@ -607,27 +659,33 @@ func runCmd(a []string) int {
 }
 
 // resolveGatePanel resolves a gate checkpoint when the live panel is active
-// on a TTY: it flips the box to the gate-question lower panel, reads a
-// single key, and records the decision. The box repaints in place, so the
-// question sits inside the bordered panel rather than below it. Falls back
-// to the plain non-interactive resolveGate when no key arrives (e.g.
-// Ctrl-C, EOF, or a non-letter key), which safely denies.
-func resolveGatePanel(store *gates.Store, p *LivePanel, g *gates.Gate) (gates.Decision, error) {
-	// Flip the box into the gate-question lower panel and repaint it in
-	// place (the cursor is already hidden by the round loop).
+// on a TTY: it flips the box to the gate-question view, hides the cursor,
+// reads a single key, tears down the gate box, restores the cursor, and
+// records the decision. paintMu and panelVisible serialize stdout writes with
+// the resize watcher so SIGWINCH repaints never tear the frame. Falls back to
+// the plain non-interactive resolveGate when no key arrives (e.g. Ctrl-C,
+// EOF, or a non-letter key), which safely denies.
+func resolveGatePanel(store *gates.Store, p *LivePanel, g *gates.Gate, paintMu *sync.Mutex, panelVisible *bool) (gates.Decision, error) {
+	paintMu.Lock()
 	p.SetGate(g.ID, g.Details)
-	os.Stdout.WriteString(p.Teardown() + p.Render())
+	p.SetSize(TerminalSize())
+	fmt.Print("\x1b[?25l") // hide cursor while gate box is shown
+	_, _ = os.Stdout.WriteString(p.Teardown() + p.Render())
+	*panelVisible = true
+	paintMu.Unlock()
+
 	key, err := ReadSingleKey()
+
+	paintMu.Lock()
+	*panelVisible = false
+	p.SetGate("", "")
+	_, _ = os.Stdout.WriteString(p.Teardown())
+	fmt.Print("\x1b[?25h") // restore cursor symmetrically after ReadSingleKey
+	paintMu.Unlock()
+
 	if err != nil {
-		// Erase the question so no ghost frame lingers, restore the cursor,
-		// and fall back to the plain resolution.
-		p.SetGate("", "")
-		os.Stdout.WriteString(p.Teardown())
-		fmt.Print("\x1b[?25h")
 		return resolveGate(store, g, false)
 	}
-	// Back to the running view for the next repaint.
-	p.SetGate("", "")
 	var choice string
 	switch key {
 	case 'a':
@@ -680,9 +738,8 @@ func finishRun(res agent.Result, ws, logPath string, stall, max time.Duration) i
 		fmt.Fprintln(os.Stderr, "  fix: raise it with --max-runtime <seconds>, or narrow the scope.")
 		code = 1
 	} else if res.Stalled {
-		fmt.Fprintf(os.Stderr, "\nrun stalled: no output for %ds - the agent was most likely blocked on an interactive permission prompt.\n", int(stall.Seconds()))
-		fmt.Fprintln(os.Stderr, "  fix: widen the allowlist with --allowed-tools \"Bash(node:*),Bash(curl:*),Read,Write,...\"")
-		fmt.Fprintln(os.Stderr, "       or opt into the blanket bypass with --dangerously-skip-permissions.")
+		fmt.Fprintf(os.Stderr, "\nrun stalled: no agent events arrived for %ds (with live stream-json streaming, the agent genuinely went quiet).\n", int(stall.Seconds()))
+		fmt.Fprintf(os.Stderr, "  fix: inspect %s, raise --stall-timeout <seconds>, or widen --allowed-tools if a tool was denied.\n", logPath)
 		code = 1
 	} else if res.Code != 0 {
 		fmt.Fprintf(os.Stderr, "\nrun failed (exit %d); see %s\n", res.Code, logPath)

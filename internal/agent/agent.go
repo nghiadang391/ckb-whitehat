@@ -61,18 +61,33 @@ func Find(found []Spec, name string) (Spec, error) {
 
 func Args(s Spec, allowed []string, skip bool, target, prompt string) []string {
 	a := append([]string{}, s.Base...)
-	if skip {
-		flag := "--dangerously-skip-permissions"
-		if s.Name == Codex {
-			flag = "--dangerously-bypass-approvals-and-sandbox"
+	switch {
+	case s.Name == Claude || s.ClaudeFlags:
+		if skip {
+			a = append([]string{"--dangerously-skip-permissions"}, a...)
+		} else {
+			// dontAsk ensures Claude never blocks on an interactive permission
+			// prompt in headless -p mode; disallowed tools fail fast cleanly.
+			a = append(a, "--permission-mode", "dontAsk")
+			if s.AllowedTools && len(allowed) > 0 {
+				a = append(a, "--allowedTools", strings.Join(allowed, ","))
+			}
 		}
-		a = append([]string{flag}, a...)
-	}
-	if s.AllowedTools && len(allowed) > 0 {
-		a = append(a, "--allowedTools", strings.Join(allowed, ","))
-	}
-	if s.ClaudeFlags {
-		a = append(a, "--permission-mode", "acceptEdits", "--add-dir", target, "--output-format", "text")
+		a = append(a, "--verbose", "--output-format", "stream-json", "--setting-sources", "user", "--add-dir", target)
+	case s.Name == Codex:
+		if skip {
+			a = append([]string{"--dangerously-bypass-approvals-and-sandbox"}, a...)
+		} else {
+			a = append(a, "--full-auto")
+		}
+		a = append(a, "--json", "--color", "never", "-c", "project_doc_max_bytes=0")
+	default:
+		if skip {
+			a = append([]string{"--dangerously-skip-permissions"}, a...)
+		}
+		if s.AllowedTools && len(allowed) > 0 {
+			a = append(a, "--allowedTools", strings.Join(allowed, ","))
+		}
 	}
 	return append(a, prompt)
 }
@@ -110,6 +125,19 @@ func (f *feeder) Write(p []byte) (int, error) {
 			f.onLine(string(f.pending[:i]))
 			f.pending = f.pending[i+1:]
 		}
+		// Release oversized backing arrays once a huge JSON line has been
+		// consumed so a single big tool event doesn't pin megabytes of RAM.
+		if len(f.pending) == 0 {
+			if cap(f.pending) > 64*1024 {
+				f.pending = nil
+			} else {
+				f.pending = f.pending[:0]
+			}
+		} else if cap(f.pending) > 64*1024 && len(f.pending) <= 64*1024 {
+			rem := make([]byte, len(f.pending))
+			copy(rem, f.pending)
+			f.pending = rem
+		}
 	}
 	f.mu.Unlock()
 	return n, err
@@ -140,13 +168,14 @@ func Spawn(ctx context.Context, s Spec, argv []string, env []string, cwd string,
 }
 
 // SpawnWithObserver is Spawn with an optional per-line observer on the
-// agent's stdout. onLine is invoked once per completed line (newline
-// stripped), in emission order, as the agent emits it. It must be
-// non-blocking (record state, never wait) and may assume the feeder mutex
-// is held while it runs, so keep it a short state update. Passing nil
-// disables observation; nil onLine => behavior identical to Spawn.
-// Any trailing partial line is delivered as one final onLine call after
-// the child exits, so slow last-line output still reaches the observer.
+// agent's stdout. Stdout is parsed incrementally through StreamParser so
+// Claude `stream-json` and Codex `--json` events emit concise live activity
+// lines to onLine while keeping Result.Stdout as clean assistant prose (and
+// plain-text agents pass through unchanged). onLine is invoked in emission
+// order while holding the feeder mutex, so it must be a short, non-blocking
+// state update. Passing nil disables observation while still decoding
+// structured streams into Result.Stdout. Any trailing partial line is
+// delivered after the child exits.
 func SpawnWithObserver(ctx context.Context, s Spec, argv []string, env []string, cwd string, stall, max time.Duration, onLine func(string)) (Result, error) {
 	if len(argv) == 0 {
 		return Result{}, errors.New("empty agent args")
@@ -155,11 +184,16 @@ func SpawnWithObserver(ctx context.Context, s Spec, argv []string, env []string,
 	defer cancel()
 	cmd := exec.CommandContext(cctx, s.Bin, argv...)
 	cmd.Dir, cmd.Env = cwd, env
+	// Explicit closed stdin ensures neither claude nor codex can ever hang
+	// waiting for interactive terminal input.
+	cmd.Stdin = strings.NewReader("")
 	setProcAttr(cmd)
 	var out, errbuf bytes.Buffer
 	var mu sync.Mutex
 	last := time.Now()
-	outF, errF := &feeder{mu: &mu, last: &last, storage: &out, onLine: onLine}, &feeder{mu: &mu, last: &last, storage: &errbuf}
+	parser := NewStreamParser(onLine)
+	outF := &feeder{mu: &mu, last: &last, storage: &out, onLine: parser.FeedLine}
+	errF := &feeder{mu: &mu, last: &last, storage: &errbuf}
 	cmd.Stdout, cmd.Stderr = outF, errF
 	if err := cmd.Start(); err != nil {
 		return Result{}, err
@@ -173,6 +207,20 @@ func SpawnWithObserver(ctx context.Context, s Spec, argv []string, env []string,
 	defer tick.Stop()
 	deadline := time.NewTimer(max)
 	defer deadline.Stop()
+
+	// snapshot returns the decoded plain-text stdout (falling back to raw
+	// stdout if nothing plain-text was extracted so crash diagnostics are
+	// never lost) and stderr, safely synchronized under mu.
+	snapshot := func() (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		stdout := parser.PlainText()
+		if stdout == "" {
+			stdout = out.String()
+		}
+		return stdout, errbuf.String()
+	}
+
 	for {
 		select {
 		case err := <-done:
@@ -186,37 +234,30 @@ func SpawnWithObserver(ctx context.Context, s Spec, argv []string, env []string,
 				}
 			}
 			outF.flushTail()
-			return Result{Code: code, Stdout: out.String(), Stderr: errbuf.String()}, nil
+			stdout, stderr := snapshot()
+			return Result{Code: code, Stdout: stdout, Stderr: stderr}, nil
 		case <-tick.C:
 			if outF.idle() > stall {
 				killProcess(cmd)
 				drainDone(done)
-				mu.Lock()
-				stdout, stderr := out.String(), errbuf.String()
-				mu.Unlock()
+				stdout, stderr := snapshot()
 				return Result{Code: 1, Stdout: stdout, Stderr: stderr, Stalled: true}, nil
 			}
 			if time.Since(started) > max {
 				killProcess(cmd)
 				drainDone(done)
-				mu.Lock()
-				stdout, stderr := out.String(), errbuf.String()
-				mu.Unlock()
+				stdout, stderr := snapshot()
 				return Result{Code: 1, Stdout: stdout, Stderr: stderr, TimedOut: true}, nil
 			}
 		case <-deadline.C:
 			killProcess(cmd)
 			drainDone(done)
-			mu.Lock()
-			stdout, stderr := out.String(), errbuf.String()
-			mu.Unlock()
+			stdout, stderr := snapshot()
 			return Result{Code: 1, Stdout: stdout, Stderr: stderr, TimedOut: true}, nil
 		case <-cctx.Done():
 			killProcess(cmd)
 			drainDone(done)
-			mu.Lock()
-			stdout, stderr := out.String(), errbuf.String()
-			mu.Unlock()
+			stdout, stderr := snapshot()
 			return Result{Code: 1, Stdout: stdout, Stderr: stderr}, cctx.Err()
 		}
 	}

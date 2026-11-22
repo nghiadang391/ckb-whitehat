@@ -95,6 +95,34 @@ func TestAllowedToolsBareFlagKeepsDefault(t *testing.T) {
 	}
 }
 
+func TestDefaultAllowedToolsSafeOfflineSet(t *testing.T) {
+	for _, want := range []string{
+		"Bash(node:*)",
+		"Bash(pg_isready:*)",
+		"Bash(git:*)",
+		"Bash(grep:*)",
+		"Bash(ls:*)",
+		"Bash(mkdir:*)",
+		"Read",
+		"Write",
+		"Edit",
+		"Grep",
+		"Glob",
+		"LS",
+	} {
+		if !contains(defaultAllowedTools, want) {
+			t.Errorf("defaultAllowedTools missing %q: %v", want, defaultAllowedTools)
+		}
+	}
+	for _, forbidden := range []string{"curl", "wget", "psql"} {
+		for _, tool := range defaultAllowedTools {
+			if strContains(tool, forbidden) {
+				t.Errorf("defaultAllowedTools must exclude %q, found %q", forbidden, tool)
+			}
+		}
+	}
+}
+
 func TestHasFlag(t *testing.T) {
 	if !hasFlag([]string{"--yolo"}, "yolo") || !hasFlag([]string{"--fresh"}, "fresh") {
 		t.Fatal("bare flag not detected")
