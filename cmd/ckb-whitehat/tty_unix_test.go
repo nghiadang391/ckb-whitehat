@@ -2,7 +2,11 @@
 
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // TestIsTerminalFalseWhenPiped asserts the panel-stay-disabled condition:
 // under `go test` stdout is always piped (captured by the test harness or
@@ -12,5 +16,48 @@ import "testing"
 func TestIsTerminalFalseWhenPiped(t *testing.T) {
 	if IsTerminal() {
 		t.Error("IsTerminal() = true under go test; stdout is piped, so the live panel must stay disabled")
+	}
+}
+
+// TestIsTerminalTrueForCharDevice is the regression test for the S_IFCHR
+// bug: os.FileMode packs the char-device bit as os.ModeCharDevice, so the
+// check must key on os.ModeCharDevice, not the raw stat S_IFCHR value.
+func TestIsTerminalTrueForCharDevice(t *testing.T) {
+	f, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+	if err != nil {
+		t.Skipf("/dev/null unavailable: %v", err)
+	}
+	defer f.Close()
+	if !fileIsTerminal(f) {
+		t.Error("fileIsTerminal(/dev/null) = false, want true: /dev/null is a character device")
+	}
+
+	reg, err := os.Create(filepath.Join(t.TempDir(), "regular"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	if fileIsTerminal(reg) {
+		t.Error("fileIsTerminal(regular file) = true, want false")
+	}
+}
+
+// TestReadSingleKeyNoTTY covers the error path when /dev/tty is absent
+// (CI has no controlling terminal): ReadSingleKey must return the zero rune
+// and an error rather than block or read a queued newline. It is skipped
+// when /dev/tty IS present (local dev shells), where the error path does
+// not apply.
+func TestReadSingleKeyNoTTY(t *testing.T) {
+	probe, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err == nil {
+		probe.Close()
+		t.Skip("/dev/tty is present; the no-TTY error path only applies without a controlling terminal (CI)")
+	}
+	r, err := ReadSingleKey()
+	if r != 0 {
+		t.Errorf("ReadSingleKey() rune = %q, want zero rune", r)
+	}
+	if err == nil {
+		t.Error("ReadSingleKey() error = nil, want an error when /dev/tty is absent")
 	}
 }

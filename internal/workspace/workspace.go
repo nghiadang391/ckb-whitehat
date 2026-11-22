@@ -1,6 +1,8 @@
 package workspace
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,17 +63,117 @@ func Slug(target string) string {
 }
 
 func (m Manager) root() string { return filepath.Join(m.Home, ".ckb-whitehat") }
-func (m Manager) RepoDir(url string) string {
-	s := strings.TrimSuffix(strings.TrimSuffix(url, "/"), ".git")
-	base := filepath.Base(s)
-	if base == "." || base == string(filepath.Separator) || base == "" {
-		base = "repo"
+
+// RepoDir returns the managed clone dir for a target spec.
+//
+// URL inputs — containing "://", starting with "git+" or "git@", or a bare
+// host/owner/repo form (github.com/x/y) — are CWD-independent: the slug is
+// derived from the URL host and path segments plus a 6-hex-char SHA-256
+// suffix of the normalized host+path, so github.com/orgA/Dular and
+// github.com/orgB/Dular never collide, and the result does not depend on the
+// process working directory. Local path inputs keep the legacy behavior (slug
+// of the absolute path), so existing local workspaces keep their directories.
+func (m Manager) RepoDir(spec string) string {
+	var slug string
+	if isURLSpec(spec) {
+		slug = urlSlug(spec)
+	} else {
+		slug = Slug(spec)
 	}
-	slug := Slug(base)
 	if slug == "" {
 		slug = "repo"
 	}
 	return filepath.Join(m.root(), "repos", slug)
+}
+
+// isURLSpec reports whether s is a URL-like git remote spec rather than a
+// local path. URL shapes: contains "://", starts with "git+" or "git@", or
+// is a bare host/owner/repo form (github.com/x/y, gitlab.com/x/y) — the form
+// a user types to init. Anything rooted ("/x") or clearly relative ("./x",
+// "../x") is a local path; a bare word with no slash is a local path too.
+// The URL branch never touches the CWD.
+func isURLSpec(s string) bool {
+	if strings.Contains(s, "://") || strings.HasPrefix(s, "git+") || strings.HasPrefix(s, "git@") {
+		return true
+	}
+	if s == "" || strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "..") {
+		return false
+	}
+	i := strings.IndexByte(s, '/')
+	if i < 0 {
+		return false
+	}
+	return strings.ContainsAny(s[:i], ".")
+}
+
+// urlSlug builds a stable slug from a URL or git remote spec.
+// git+ prefixes are stripped, then host and path segments are slugified
+// (lowercased, non-alphanumeric runs become single dashes) and a 6-hex-char
+// SHA-256 prefix of the normalized scheme-less host+path (case-folded, no
+// .git suffix) is appended, so URLs that survive to the same slug body but
+// are not the same repo get distinct suffixes. No CWD involvement. E.g.
+// github.com/duongja/Dular → "github-com-duongja-dular-<6hex>".
+func urlSlug(spec string) string {
+	s := strings.TrimPrefix(spec, "git+")
+	var host, path string
+	if i := strings.Index(s, "://"); i >= 0 {
+		rest := s[i+len("://"):]
+		if j := strings.IndexByte(rest, '/'); j >= 0 {
+			host, path = rest[:j], rest[j+1:]
+		} else {
+			host = rest
+		}
+		if j := strings.IndexByte(host, '@'); j >= 0 {
+			host = host[j+1:] // drop userinfo, e.g. ssh://git@github.com/...
+		}
+	} else {
+		// scp-like git remote (git@github.com:org/repo.git) or a bare
+		// host/owner/repo form (github.com/org/repo).
+		if i := strings.LastIndex(s, "@"); i >= 0 {
+			s = s[i+1:]
+		}
+		if i := strings.LastIndex(s, ":"); i >= 0 {
+			host, path = s[:i], s[i+1:]
+		} else if i := strings.IndexByte(s, '/'); i >= 0 {
+			host, path = s[:i], s[i+1:]
+		} else {
+			host = s
+		}
+	}
+	parts := []string{slugify(host)}
+	segs := strings.Split(path, "/")
+	if len(segs) > 0 {
+		segs[len(segs)-1] = strings.TrimSuffix(segs[len(segs)-1], ".git")
+	}
+	for _, seg := range segs {
+		if seg = slugify(seg); seg != "" && seg != ".git" {
+			parts = append(parts, seg)
+		}
+	}
+	base := strings.Join(parts, "-")
+	if base == "" {
+		base = "repo"
+	}
+	np := strings.TrimSuffix(strings.TrimSuffix(path, ".git"), "/")
+	sum := sha256.Sum256([]byte(strings.ToLower(host) + "/" + strings.ToLower(np)))
+	return base + "-" + hex.EncodeToString(sum[:])[:6]
+}
+
+// slugify normalizes one host or path segment: lowercased, runs of
+// non-alphanumeric characters collapsed to single dashes.
+func slugify(s string) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 func (m Manager) LegacyWorkspace(target string) string {
 	return filepath.Join(m.root(), filepath.Base(target))
@@ -133,7 +235,10 @@ func (m Manager) ResolveTargetOpts(spec string, ro ResolveOpts) (string, Config,
 		if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
 			return "", Config{}, err
 		}
-		args := []string{"clone"}
+		// H1.4: harden against an untrusted target repo's .git — disable
+		// hook execution (post-checkout hooks), the fsmonitor binary, and
+		// symlink creation from cloned content.
+		args := []string{"clone", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.symlinks=false"}
 		if ro.Depth > 0 {
 			args = append(args, "--depth", fmt.Sprint(ro.Depth))
 		}
@@ -186,7 +291,7 @@ func (m Manager) InitOpts(target string, scope []string, chain bool, ro ResolveO
 		fmt.Fprintf(os.Stderr, "warning: %s is not a git repo — findings cannot be diffed against a baseline\n", resolved)
 	}
 	cleaned := cleanScope(scope)
-	cfg := Config{Version: Version, Target: resolved, CreatedAt: time.Now().UTC().Format(time.RFC3339), Scope: cleaned, Onchain: chain || contains(cleaned, "chain"), Services: origin.Services, TargetOrigin: origin.TargetOrigin, CloneURL: origin.CloneURL, Commit: origin.Commit}
+	cfg := Config{Version: Version, Target: resolved, CreatedAt: time.Now().UTC().Format(time.RFC3339), Scope: cleaned, Onchain: chain || contains(cleaned, "chain"), Services: origin.Services, TargetOrigin: origin.TargetOrigin, CloneURL: origin.CloneURL, Commit: origin.Commit, DepsInstalled: origin.DepsInstalled}
 	ws := m.Workspace(resolved)
 	if err := os.MkdirAll(filepath.Join(ws, "poc"), 0755); err != nil {
 		return "", Config{}, err

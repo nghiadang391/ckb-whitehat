@@ -134,6 +134,29 @@ func TestSpawnMaxRuntimeKills(t *testing.T) {
 	}
 }
 
+// TestSpawnKillPathChattyChildNoRace: a chatty child is killed at the
+// wall-clock boundary while a stdio-copy goroutine may be mid-Write, which
+// is exactly the pair that raced in audit M1 (out.String() vs feeder.Write).
+// The child is bounded (25s) so it can't leak, and max=1s guarantees the
+// kill path with output still flowing. Run under `go test -race` to catch
+// the String()/Write() race: without the drainDone + mutex guard this fails
+// the race detector.
+func TestSpawnKillPathChattyChildNoRace(t *testing.T) {
+	s := Spec{Name: "sh", Bin: "/bin/sh", Base: []string{"-c"}}
+	res, err := Spawn(context.Background(), s,
+		[]string{"-c", "i=0; while [ $i -lt 500 ]; do echo tick; i=$((i+1)); sleep 0.05; done"}, nil, ".",
+		60*time.Second, 1*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.TimedOut || res.Code != 1 {
+		t.Fatalf("want a killed chatty child (timedOut, code 1), got %+v", res)
+	}
+	if res.Stdout == "" {
+		t.Fatal("expected captured output from the chatty child up to the kill")
+	}
+}
+
 // TestSpawnStallResetsOnOutput: continuous output must keep re-arming the
 // stall timer (the parity fix from the Node CLI — a chatty agent is not
 // silent). The child emits a tick every 200ms for 4s; a 1s stall budget

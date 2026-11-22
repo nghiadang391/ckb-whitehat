@@ -63,6 +63,15 @@ func updateCmd(a []string) int {
 	if apiBase == "" {
 		apiBase = "https://api.github.com"
 	}
+	// A non-HTTPS API base would let a mirror serve release metadata over an
+	// open channel — the checksums would be untrusted too (audit M2.1).
+	// Allow plain http only for a localhost test mirror.
+	if !strings.HasPrefix(apiBase, "http") {
+		apiBase = "https://" + apiBase
+	}
+	if !strings.HasPrefix(apiBase, "https://") && !strings.Contains(apiBase, "127.0.0.1") && !strings.Contains(apiBase, "localhost") {
+		die("update: CKB_WHITEHAT_UPDATE_API must be https (or a localhost test mirror)", 1)
+	}
 
 	url := apiBase + "/repos/" + repo + "/releases/"
 	if target == "" {
@@ -120,7 +129,7 @@ func updateCmd(a []string) int {
 		die("update: release "+rel.TagName+" is missing the "+name+" or sha256sums.txt asset", 1)
 	}
 
-	sumsBody, err := download(client, sumsURL)
+	sumsBody, err := download(client, ensureHTTPS(sumsURL))
 	if err != nil {
 		die("update: download "+sumsURL+": "+err.Error(), 1)
 	}
@@ -149,7 +158,7 @@ func updateCmd(a []string) int {
 }
 
 func installVerified(client *http.Client, binURL, wantHash, exe, assetName string) (staged bool, err error) {
-	body, err := download(client, binURL)
+	body, err := download(client, ensureHTTPS(binURL))
 	if err != nil {
 		return false, fmt.Errorf("download %s: %w", binURL, err)
 	}
@@ -159,6 +168,12 @@ func installVerified(client *http.Client, binURL, wantHash, exe, assetName strin
 	}
 	if got != wantHash {
 		return false, fmt.Errorf("sha256 mismatch for %s: got %s want %s - binary not replaced", assetName, got, wantHash)
+	}
+	// Resolve the running binary's real path so a symlinked install updates
+	// the target, not the link (audit M2.4).
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return false, err
 	}
 	fmt.Printf("verified sha256 of %s\n", assetName)
 
@@ -172,15 +187,39 @@ func installVerified(client *http.Client, binURL, wantHash, exe, assetName strin
 		return true, nil
 	}
 
-	tmp := filepath.Join(filepath.Dir(exe), filepath.Base(exe)+".new")
-	if err := os.WriteFile(tmp, body, 0755); err != nil {
-		return false, fmt.Errorf("cannot write the directory of %s: %w", exe, err)
+	// Create the staging file unpredictably in the exe's directory rather
+	// than at a fixed <exe>.new name (audit M2.4).
+	dir := filepath.Dir(exe)
+	tmp, err := os.CreateTemp(dir, ".ckb-whitehat-*.new")
+	if err != nil {
+		return false, fmt.Errorf("cannot create a temp staging file in %s: %w", dir, err)
 	}
-	if err := os.Rename(tmp, exe); err != nil {
-		os.Remove(tmp)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return false, fmt.Errorf("cannot write the staged binary: %w", err)
+	}
+	tmp.Close()
+	if err := os.Chmod(tmpName, 0755); err != nil {
+		os.Remove(tmpName)
+		return false, err
+	}
+	if err := os.Rename(tmpName, exe); err != nil {
+		os.Remove(tmpName)
 		return false, err
 	}
 	return false, nil
+}
+
+// ensureHTTPS forces an https URL unless it already points at a localhost
+// mirror (used by tests). Downloading a release asset over plain http is a
+// supply-chain risk (audit M2.1).
+func ensureHTTPS(u string) string {
+	if strings.HasPrefix(u, "http://") && !strings.Contains(u, "127.0.0.1") && !strings.Contains(u, "localhost") {
+		return "https://" + strings.TrimPrefix(u, "http://")
+	}
+	return u
 }
 
 // download fetches url and returns the body; non-200 is an error.
@@ -197,14 +236,32 @@ func download(client *http.Client, url string) ([]byte, error) {
 }
 
 // shaEntry extracts the expected sha256 hex for asset name from a
-// sha256sums.txt body ("hash  name" lines, as `sha256sum` writes).
+// sha256sums.txt body ("hash  name" lines, as `sha256sum` writes). It
+// tolerates the `sha256sum -b` binary-mode `*name` prefix and the `*` that
+// marks binary output (audit M2.3), and rejects a hash that is not 64
+// lowercase hex so a malformed/trimmed entry can't be trusted.
 func shaEntry(sums []byte, name string) (string, error) {
 	for _, line := range strings.Split(string(sums), "\n") {
 		f := strings.Fields(line)
-		if len(f) < 2 || f[1] != name {
+		if len(f) < 2 {
 			continue
 		}
-		return strings.ToLower(f[0]), nil
+		// Fields are the hex hash (possibly with a leading '*') and the
+		// name (possibly with a leading '*' in binary mode).
+		hash := strings.TrimPrefix(f[0], "*")
+		file := strings.TrimPrefix(f[1], "*")
+		if file != name {
+			continue
+		}
+		if len(hash) != 64 {
+			return "", fmt.Errorf("sha256sums.txt entry for %s is not a 64-char hash: %q", name, hash)
+		}
+		for _, c := range hash {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return "", fmt.Errorf("sha256sums.txt entry for %s is not hex: %q", name, hash)
+			}
+		}
+		return strings.ToLower(hash), nil
 	}
 	return "", fmt.Errorf("sha256sums.txt has no entry for %s", name)
 }

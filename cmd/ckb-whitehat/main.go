@@ -406,6 +406,12 @@ func runCmd(a []string) int {
 	if workspace.IsURL(spec) {
 		if dir, _, err := m.ResolveTargetOpts(spec, resolveOpts(a)); err == nil {
 			local = dir
+		} else {
+			// Don't fall back to a stale local dir when the URL target
+			// cannot be resolved (audit LOW.4): the user asked for the
+			// URL, so a failed clone is a real error, not a silent
+			// "use the other one".
+			die(fmt.Sprintf("cannot resolve URL target %s: %v (run: ckb-whitehat init %s)", spec, err, spec), 1)
 		}
 	}
 	ws, cfg, err := m.ReadConfig(local)
@@ -465,7 +471,14 @@ func runCmd(a []string) int {
 	fmt.Printf("  workspace  : %s\n", ws)
 	logPath := filepath.Join(ws, "run.log")
 	fmt.Printf("  log        : %s\n", logPath)
-	fmt.Printf("  allow tools: %s\n", strings.Join(allowed, ", "))
+	if agentSpec.AllowedTools {
+		fmt.Printf("  allow tools: %s\n", strings.Join(allowed, ", "))
+	} else {
+		// This agent CLI has no --allowed-tools flag: the list would not be
+		// enforced (audit H1.2). Label it as unenforced instead of
+		// implying the allowlist is in effect.
+		fmt.Printf("  tools (NOT enforced - this CLI has no allowlist flag): %s\n", strings.Join(allowed, ", "))
+	}
 	fmt.Printf("  stall limit: %ds   max runtime: %ds\n", int(stall.Seconds()), int(max.Seconds()))
 
 	// Checkpoint loop: the agent may end a round with a gate line; the human
@@ -539,7 +552,17 @@ func runCmd(a []string) int {
 		if res.Stderr != "" {
 			content += "\n--- stderr ---\n" + res.Stderr
 		}
-		_ = os.WriteFile(logPath, []byte(content), 0644)
+		// Append the round's output: run.log is the record of ALL rounds, so
+		// a checkpoint re-spawn must not clobber the previous rounds' log.
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			die(err.Error(), 1)
+		}
+		if round > 0 {
+			fmt.Fprintf(f, "\n--- checkpoint re-spawn, round %d ---\n", round+1)
+		}
+		_, _ = f.WriteString(content + "\n")
+		f.Close()
 		// The 40-line tail only shows when the panel is off; on a TTY the
 		// user already watched the output live, and run.log has the record.
 		if !panelActive && strings.TrimSpace(res.Stdout) != "" {
@@ -547,12 +570,21 @@ func runCmd(a []string) int {
 		}
 
 		if g := lastGate(res.Stdout); g != nil && !res.Stalled && !res.TimedOut {
+			if !interactive {
+				// A gate line in a non-interactive run is ignored, not a
+				// respawn trigger: echoing CKB-WHITEHAT-GATE: used to loop
+				// the agent maxGateRounds times with nothing to decide
+				// (audit H4.1). The round is terminal; finish with its output.
+				fmt.Fprintf(os.Stderr, "note: gate line %q in agent output ignored (non-interactive run; use --interactive to answer checkpoints)\n", g.ID)
+				gatedExhausted = false
+				break
+			}
 			var d gates.Decision
 			var err error
-			if panelActive && interactive {
+			if panelActive {
 				d, err = resolveGatePanel(store, panel, g)
 			} else {
-				d, err = resolveGate(store, g, interactive)
+				d, err = resolveGate(store, g, true)
 			}
 			if err != nil {
 				die(err.Error(), 1)
@@ -609,7 +641,7 @@ func resolveGatePanel(store *gates.Store, p *LivePanel, g *gates.Gate) (gates.De
 	default:
 		choice = "deny"
 	}
-	d := gates.Decision{GateID: g.ID, Choice: choice, Timestamp: time.Now().UTC()}
+	d := gates.Decision{GateID: g.ID, Choice: choice, Details: g.Details, Timestamp: time.Now().UTC()}
 	if err := store.Add(d); err != nil {
 		return d, err
 	}

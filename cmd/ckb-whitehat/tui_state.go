@@ -41,9 +41,13 @@ func ChooseLowerMode(gateActive bool, idle, stallLimit time.Duration) lowerMode 
 // StallWarning returns the two-line warning text for the lower panel, given
 // how long the agent has been quiet. formatElapsed is the same mmss helper
 // the box renderer uses, so the number matches the elapsed column exactly.
+// The stop hint is Ctrl-C (not a keypress): while the agent is running,
+// nothing is reading the keyboard, so the only mid-run stop is the shell
+// signal. A keypress answer ("x") only works once the run pauses at a
+// checkpoint gate (audit M3.3).
 func StallWarning(idle time.Duration) string {
 	return strings.Join([]string{
 		fmt.Sprintf("⚠ no output for %s — agent likely blocked on a", formatElapsed(idle)),
-		"  permission prompt (allowlist). Widen it, or press x to stop.",
+		"  permission prompt (allowlist). Widen it, or Ctrl-C to stop.",
 	}, "\n")
 }

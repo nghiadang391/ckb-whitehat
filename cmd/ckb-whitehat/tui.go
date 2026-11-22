@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nghiadang391/ckb-whitehat/internal/gates"
 )
 
 // LivePanel is a live "what's running" panel. The orchestrator paints
@@ -70,10 +72,13 @@ func (p *LivePanel) Restart() {
 
 // OnLine is called from the agent-observer goroutine for each new output
 // line. It appends to a bounded history (last 200 lines) and refreshes the
-// last-output time.
+// last-output time. Agent output is untrusted target content: it is
+// sanitized on ingestion so no escape sequence can ever reach the TUI
+// (audit H4.2 — a hostile repo could otherwise drive the user's terminal).
 func (p *LivePanel) OnLine(line string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	line = gates.SanitizeTerminal(line)
 	p.history = append(p.history, line)
 	if len(p.history) > historyLimit {
 		p.history = p.history[len(p.history)-historyLimit:]
@@ -83,12 +88,14 @@ func (p *LivePanel) OnLine(line string) {
 
 // SetGate puts the box in the gate-question view when gateID != "", or
 // clears it when gateID == "". The orchestrator calls this when a gate
-// checkpoint opens and closes again; mutex-guarded like the rest.
+// checkpoint opens and closes again; mutex-guarded like the rest. Details
+// is agent-supplied and is sanitized here so the question view can't
+// carry terminal escapes to the screen.
 func (p *LivePanel) SetGate(gateID, detail string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.gateID = gateID
-	p.gateDet = detail
+	p.gateID = gates.SanitizeTerminal(gateID)
+	p.gateDet = gates.SanitizeTerminal(detail)
 }
 
 // ForceIdleForTest backdates lastOutputAt by d so tests can exercise the
@@ -282,11 +289,14 @@ func SpinFrame(i int) string {
 	return string(runes[j])
 }
 
-// ClearLines returns ANSI sequences that erase the last n lines: cursor-up
-// n followed by n "erase whole line" sequences. It returns "" when n <= 0.
+// ClearLines returns ANSI sequences that erase the last n lines: cursor-up n,
+// then clear-to-end-of-screen (J), which covers the whole block even when the
+// new frame is shorter than the old one, with no ghost rows. Returns "" when
+// n <= 0. The panel is always the last thing painted above the screen's end,
+// so clearing to the end of the screen is safe.
 func ClearLines(n int) string {
 	if n <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("\x1b[%dA", n) + strings.Repeat("\x1b[2K", n)
+	return fmt.Sprintf("\x1b[%dA\x1b[J", n)
 }

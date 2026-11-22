@@ -11,11 +11,35 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const prefix = "CKB-WHITEHAT-GATE:"
 
 var gateLine = regexp.MustCompile(`(?m)^CKB-WHITEHAT-GATE:\s*([A-Za-z0-9._-]+)(?:\s+(.*))?$`)
+
+// ansiRe matches ANSI/VT escape sequences (CSI, OSC, and other ESC-introduced
+// sequences) so they can be stripped from untrusted agent text before it
+// reaches a TTY. A hostile target repo can emit escape bytes in stdout; if we
+// printed them raw they'd drive the user's terminal (cursor/erase/OSC) — a
+// terminal-injection vector (audit H4.2).
+var ansiRe = regexp.MustCompile("\x1b(?:\\[[0-9;?]*[ -/][@-~]|\\][^\x1b\x07]*(?:\x07|\x1b\\())|[\x00-\x08\x0b-\x1f\x7f]")
+
+// SanitizeTerminal strips terminal control/escape sequences from s so it is
+// safe to print to a TTY. The gate ID is already constrained to a safe charset
+// by gateLine; this protects the free-form Details and the agent's raw output
+// lines that the live box and Prompt render.
+func SanitizeTerminal(s string) string {
+	s = ansiRe.ReplaceAllString(s, "")
+	// Drop any remaining non-printable runes (the regex catches the common
+	// ones; this is the belt-and-suspenders pass).
+	return strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) || r == '\n' {
+			return r
+		}
+		return -1
+	}, s)
+}
 
 // Gate is a checkpoint requested by the agent. Details is opaque display data.
 type Gate struct {
@@ -93,9 +117,9 @@ func Prompt(in io.Reader, out io.Writer, gate Gate, interactive bool) (Decision,
 	if in == nil || out == nil {
 		return d, errors.New("interactive gate requires input and output")
 	}
-	fmt.Fprintf(out, "\nckb-whitehat checkpoint: %s\n", gate.ID)
+	fmt.Fprintf(out, "\nckb-whitehat checkpoint: %s\n", SanitizeTerminal(gate.ID))
 	if gate.Details != "" {
-		fmt.Fprintf(out, "details: %s\n", gate.Details)
+		fmt.Fprintf(out, "details: %s\n", SanitizeTerminal(gate.Details))
 	}
 	fmt.Fprintln(out, "choose: approve, edit, skip, deny, or stop")
 	fmt.Fprint(out, "> ")

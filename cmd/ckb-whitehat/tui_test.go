@@ -61,19 +61,20 @@ func TestSpinFrameCycles(t *testing.T) {
 }
 
 func TestClearLines(t *testing.T) {
-	if got := ClearLines(0); got != "" {
-		t.Errorf("ClearLines(0) = %q, want empty", got)
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{0, ""},
+		{-3, ""},
+		{1, "\x1b[1A\x1b[J"},
+		{3, "\x1b[3A\x1b[J"},
+		{7, "\x1b[7A\x1b[J"},
 	}
-	if got := ClearLines(-3); got != "" {
-		t.Errorf("ClearLines(-3) = %q, want empty", got)
-	}
-	got := ClearLines(3)
-	wantUp := "\x1b[3A"
-	if !strings.Contains(got, wantUp) {
-		t.Errorf("ClearLines(3) = %q, want cursor-up %q", got, wantUp)
-	}
-	if n := strings.Count(got, "\x1b[2K"); n != 3 {
-		t.Errorf("ClearLines(3) has %d line-clears, want 3", n)
+	for _, c := range cases {
+		if got := ClearLines(c.n); got != c.want {
+			t.Errorf("ClearLines(%d) = %q, want %q", c.n, got, c.want)
+		}
 	}
 }
 
@@ -137,7 +138,7 @@ func TestBoxStallWarning(t *testing.T) {
 	if strings.Contains(got, "── agent ─") {
 		t.Errorf("stalled Render must not show the agent tail: %q", got)
 	}
-	for _, want := range []string{"permission prompt (allowlist)", "press x to stop"} {
+	for _, want := range []string{"permission prompt (allowlist)", "Ctrl-C to stop"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("stalled Render missing %q in %q", want, got)
 		}
@@ -162,11 +163,8 @@ func TestBoxTeardownLineCount(t *testing.T) {
 		t.Fatalf("Render produced no lines: %q", got)
 	}
 	teardown := p.Teardown()
-	if !strings.Contains(teardown, fmt.Sprintf("\x1b[%dA", n)) {
-		t.Errorf("Teardown missing cursor-up %d: %q", n, teardown)
-	}
-	if c := strings.Count(teardown, "\x1b[2K"); c != n {
-		t.Errorf("Teardown has %d line-clears, want %d", c, n)
+	if want := fmt.Sprintf("\x1b[%dA\x1b[J", n); teardown != want {
+		t.Errorf("Teardown = %q, want %q", teardown, want)
 	}
 }
 
@@ -198,8 +196,8 @@ func TestLivePanelRenderGrows(t *testing.T) {
 		t.Errorf("Render after 3 lines has %d lines, want 7 (2 borders + status + 3 tails)", n)
 	}
 	// Teardown must erase exactly what the last Render painted.
-	if teardown := p.Teardown(); !strings.Contains(teardown, "\x1b[7A") || strings.Count(teardown, "\x1b[2K") != 7 {
-		t.Errorf("Teardown after 7-line render = %q, want cursor-up 7 + 7 line-clears", teardown)
+	if teardown := p.Teardown(); teardown != "\x1b[7A\x1b[J" {
+		t.Errorf("Teardown after 7-line render = %q, want cursor-up 7 + clear-to-end", teardown)
 	}
 }
 
@@ -241,11 +239,8 @@ func TestLivePanelTeardownErasesRenderedLines(t *testing.T) {
 		t.Fatalf("Render produced %d lines, want 7: %q", n, got)
 	}
 	got = p.Teardown()
-	if c := strings.Count(got, "\x1b[2K"); c != 7 {
-		t.Errorf("Teardown after 7-line Render has %d line-clears, want 7", c)
-	}
-	if !strings.Contains(got, "\x1b[7A") {
-		t.Errorf("Teardown after 7-line Render missing cursor-up 7: %q", got)
+	if want := "\x1b[7A\x1b[J"; got != want {
+		t.Errorf("Teardown after 7-line Render = %q, want %q", got, want)
 	}
 }
 

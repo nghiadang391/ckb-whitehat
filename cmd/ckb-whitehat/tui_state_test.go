@@ -42,7 +42,7 @@ func TestStallWarningText(t *testing.T) {
 	if lines[0] != wantFirst {
 		t.Errorf("first line = %q, want %q", lines[0], wantFirst)
 	}
-	const wantSecond = "  permission prompt (allowlist). Widen it, or press x to stop."
+	const wantSecond = "  permission prompt (allowlist). Widen it, or Ctrl-C to stop."
 	if lines[1] != wantSecond {
 		t.Errorf("second line = %q, want %q", lines[1], wantSecond)
 	}

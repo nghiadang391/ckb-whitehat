@@ -127,8 +127,35 @@ It is informational, never blocking — init succeeds either way.
 Upstream source is vendored at `tapfiber/` (MIT, github.com/0xVida/tapfiber);
 the PoC runs against it in-tree: `node tapfiber/poc/attack.mjs`.
 
+## Security model
+
+- The agent runs with the tool allowlist above, **but allowlists are prompt
+  level, not a sandbox**: `Bash(node:*)` can reach the network and
+  filesystem, and `codex` ignores `--allowed-tools` entirely (the CLI now
+  says so explicitly instead of implying enforcement).
+- The target is treated as untrusted *content* — the skill instructs the
+  agent to never execute code from the target tree, and PoCs run in the
+  workspace — but there is **no OS-level isolation boundary** between the
+  agent/PoC process and your host. Run against untrusted targets in a
+  disposable VM or container (e.g. `docker --network=none`), or a
+  compromised/broken PoC is one `node -e` away from touching your machine.
+- Checkpoint (gate) lines and agent output are sanitized before reaching
+  the terminal; non-interactive runs never respawn on gate lines.
+- `git clone` of URL targets passes hardened flags
+  (`-c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.symlinks=false`)
+  so a hostile repo can't run hooks or plant fsmonitor binaries during clone.
+
 ## Disclosure
 
-Findings in these reports are unpatched observations against public code and
-remain **private** until the maintainers' consent. On-chain traces used only
-our own testnet addresses, faucet asset, and local services.
+Findings in these reports are **unpatched observations against public code**.
+This repo shares them openly because it is a demonstration of the
+whitehat method (audit C1): the PoCs are kept non-exploitable on the
+target's live systems — they run against local instances, mocked vendors,
+and our own testnet addresses only — but the exploit mechanics and the
+pointers to unpatched targets (including paths to PII/OTP material inside
+the target repos) are visible here. The intended flow is: report the
+maintainer privately with a patch window, obtain consent, then keep these
+public. Until that consent is in place, treat the target-repo findings in
+`dular/` and `tapfiber/` as disclosure-pending, not public knowledge, and
+do not act on them. On-chain traces used only our own testnet addresses,
+faucet asset, and local services.

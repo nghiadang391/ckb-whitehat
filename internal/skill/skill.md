@@ -156,12 +156,14 @@ money on-chain (the chain executed it faithfully); it is not a chain bug.
   say so in the report.
 
 ### Domain cheatsheet: CKB + Fiber (only what actually costs tokens to rediscover)
-- **Testnets:** `testnet.ckb.dev` ≡ `testnet.ckbapp.dev` are two gateways onto
-  the *same* chain; the explorer for it is `puce.explorer.nervos.org`, and
-  "Pudge" is that chain's **faucet** (Puce) — not a separate chain. The CKB
-  testnet generations are Aggron → Lina → Puce → Meepo; **Lina and Puce are
-  testnets, not mainnet** (mainnet is plain "CKB", explorer `explorer.nervos.org`).
-  A Pudge claim never appears where a node watching a *different* generation looks.
+- **Mainnet vs testnet (do not mix these up):** `ckb`/`lina`
+  (explorer.nervos.org) is **production mainnet — never fund it, never open
+  channels against it, and treat any PoC that would move real CKB as out of
+  scope**. **Pudge is the testnet** (explorer `pudge.explorer.nervos.org`,
+  faucets via `testnet.ckbapp.dev` / `testnet.ckb.dev`); Meepo is the
+  current protocol edition shared by both networks. A target configured
+  with `chain: ckb` / `lina` is on mainnet — a Pudge claim never appears
+  where a node watching mainnet looks.
 - **Outpoint:** `funding_tx_hash (64 hex) ‖ index (8 hex)`. A channel's
   `channel_outpoint` first-64-hex is its funding tx. Derive the funding tx from
   the outpoint (FNN 0.9.1 `list_channels` does **not** return

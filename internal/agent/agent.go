@@ -190,18 +190,48 @@ func SpawnWithObserver(ctx context.Context, s Spec, argv []string, env []string,
 		case <-tick.C:
 			if outF.idle() > stall {
 				killProcess(cmd)
-				return Result{Code: 1, Stdout: out.String(), Stderr: errbuf.String(), Stalled: true}, nil
+				drainDone(done)
+				mu.Lock()
+				stdout, stderr := out.String(), errbuf.String()
+				mu.Unlock()
+				return Result{Code: 1, Stdout: stdout, Stderr: stderr, Stalled: true}, nil
 			}
 			if time.Since(started) > max {
 				killProcess(cmd)
-				return Result{Code: 1, Stdout: out.String(), Stderr: errbuf.String(), TimedOut: true}, nil
+				drainDone(done)
+				mu.Lock()
+				stdout, stderr := out.String(), errbuf.String()
+				mu.Unlock()
+				return Result{Code: 1, Stdout: stdout, Stderr: stderr, TimedOut: true}, nil
 			}
 		case <-deadline.C:
 			killProcess(cmd)
-			return Result{Code: 1, Stdout: out.String(), Stderr: errbuf.String(), TimedOut: true}, nil
+			drainDone(done)
+			mu.Lock()
+			stdout, stderr := out.String(), errbuf.String()
+			mu.Unlock()
+			return Result{Code: 1, Stdout: stdout, Stderr: stderr, TimedOut: true}, nil
 		case <-cctx.Done():
 			killProcess(cmd)
-			return Result{Code: 1, Stdout: out.String(), Stderr: errbuf.String()}, cctx.Err()
+			drainDone(done)
+			mu.Lock()
+			stdout, stderr := out.String(), errbuf.String()
+			mu.Unlock()
+			return Result{Code: 1, Stdout: stdout, Stderr: stderr}, cctx.Err()
 		}
+	}
+}
+
+// drainDone waits, with a bound, for cmd.Wait to return (i.e. the stdio-copy
+// goroutines to have finished) after a killProcess. The group kill makes the
+// child die and Wait return promptly; the 10s bound guards a pathological
+// kill so a caller can never block indefinitely. Until this returns, the
+// copy goroutine may still be mid-Write into out/errbuf, so callers must not
+// read those buffers concurrently (audit M1: the old code read
+// out.String() here racing the copy's Write under -race).
+func drainDone(done <-chan error) {
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
 	}
 }
