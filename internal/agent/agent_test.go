@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"sync"
@@ -9,8 +10,31 @@ import (
 	"time"
 )
 
+func candidateByKind(t *testing.T, kind Kind) Spec {
+	t.Helper()
+	for _, c := range Candidates {
+		if c.Name == kind {
+			return c
+		}
+	}
+	t.Fatalf("candidate %q not found", kind)
+	return Spec{}
+}
+
+func TestCandidatesDefaultOrder(t *testing.T) {
+	want := []Kind{Agy, Claude, Codex}
+	if len(Candidates) != len(want) {
+		t.Fatalf("len(Candidates) = %d, want %d", len(Candidates), len(want))
+	}
+	for i, k := range want {
+		if Candidates[i].Name != k {
+			t.Fatalf("Candidates[%d].Name = %q, want %q (auto-detect order: agy -> claude -> codex)", i, Candidates[i].Name, k)
+		}
+	}
+}
+
 func TestArgs(t *testing.T) {
-	claude := Candidates[0]
+	claude := candidateByKind(t, Claude)
 
 	// Claude default (skip=false) with allowed tools.
 	// --add-dir <directories...> is variadic, so non-variadic flags and "--"
@@ -63,7 +87,7 @@ func TestArgs(t *testing.T) {
 		t.Fatalf("claude skip=true:\ngot:  %#v\nwant: %#v", got, want)
 	}
 
-	codex := Candidates[1]
+	codex := candidateByKind(t, Codex)
 
 	// Codex default (skip=false) uses --full-auto and --json streaming.
 	got = Args(codex, nil, false, "/target", "p")
@@ -92,10 +116,42 @@ func TestArgs(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("codex skip=true:\ngot:  %#v\nwant: %#v", got, want)
 	}
+
+	agy := candidateByKind(t, Agy)
+	got = Args(agy, []string{"Bash(node:*)", "Bash(git:*)", "Read"}, false, "/target", "prompt")
+	if len(got) != 7 || got[0] != "-p" || got[1] != "prompt" || got[2] != "--output-format" || got[3] != "stream-json" || got[4] != "--disable-slash-commands" || got[5] != "--settings" {
+		t.Fatalf("agy skip=false args shape unexpected: %#v", got)
+	}
+	for _, a := range got {
+		if a == "--add-dir" {
+			t.Fatalf("agy args must NEVER pass --add-dir (prevents untrusted target hooks/AGENTS.md execution): %#v", got)
+		}
+	}
+	var cfg agySettings
+	if err := json.Unmarshal([]byte(got[6]), &cfg); err != nil {
+		t.Fatalf("invalid agy --settings JSON: %v (%s)", err, got[6])
+	}
+	if cfg.AgentMode != "accept-edits" || cfg.ToolPermission != "request-review" || cfg.AllowNonWorkspaceAccess {
+		t.Fatalf("unexpected agy modes: %+v", cfg)
+	}
+	wantAllow := []string{"read_file(/target)", "command(node)", "command(git)"}
+	if !reflect.DeepEqual(cfg.Permissions.Allow, wantAllow) {
+		t.Fatalf("agy allow:\ngot:  %#v\nwant: %#v", cfg.Permissions.Allow, wantAllow)
+	}
+	wantDeny := []string{"command(curl)", "command(wget)", "command(psql)", "command(sudo)", "command(env)", "write_file(/target)", "read_url(*)", "execute_url(*)", "mcp(*)"}
+	if !reflect.DeepEqual(cfg.Permissions.Deny, wantDeny) {
+		t.Fatalf("agy deny:\ngot:  %#v\nwant: %#v", cfg.Permissions.Deny, wantDeny)
+	}
+
+	got = Args(agy, []string{"Bash(node:*)"}, true, "/target", "prompt")
+	want = []string{"-p", "prompt", "--output-format", "stream-json", "--disable-slash-commands", "--dangerously-skip-permissions"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("agy skip=true:\ngot:  %#v\nwant: %#v", got, want)
+	}
 }
 
 func TestReadOnlyArgs(t *testing.T) {
-	claude := Candidates[0]
+	claude := candidateByKind(t, Claude)
 	got := ReadOnlyArgs(claude, []string{"Read", "Glob", "Grep", "LS"}, "/target", "inspect")
 	want := []string{
 		"-p",
@@ -112,7 +168,7 @@ func TestReadOnlyArgs(t *testing.T) {
 		t.Fatalf("claude read-only:\ngot:  %#v\nwant: %#v", got, want)
 	}
 
-	codex := Candidates[1]
+	codex := candidateByKind(t, Codex)
 	got = ReadOnlyArgs(codex, []string{"Read"}, "/target", "inspect")
 	want = []string{
 		"exec",
@@ -124,6 +180,26 @@ func TestReadOnlyArgs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("codex read-only:\ngot:  %#v\nwant: %#v", got, want)
+	}
+
+	agy := candidateByKind(t, Agy)
+	got = ReadOnlyArgs(agy, []string{"Read", "Glob", "Grep", "LS"}, "/target", "inspect")
+	if len(got) != 7 || got[0] != "-p" || got[1] != "inspect" || got[5] != "--settings" {
+		t.Fatalf("agy read-only args unexpected: %#v", got)
+	}
+	var cfg agySettings
+	if err := json.Unmarshal([]byte(got[6]), &cfg); err != nil {
+		t.Fatalf("invalid agy read-only settings JSON: %v", err)
+	}
+	if cfg.AgentMode != "" || cfg.ToolPermission != "request-review" || cfg.AllowNonWorkspaceAccess {
+		t.Fatalf("unexpected agy read-only modes: %+v", cfg)
+	}
+	if !reflect.DeepEqual(cfg.Permissions.Allow, []string{"read_file(/target)"}) {
+		t.Fatalf("agy read-only allow: %#v", cfg.Permissions.Allow)
+	}
+	wantRODeny := []string{"command(*)", "write_file(*)", "read_url(*)", "execute_url(*)", "mcp(*)"}
+	if !reflect.DeepEqual(cfg.Permissions.Deny, wantRODeny) {
+		t.Fatalf("agy read-only deny: %#v", cfg.Permissions.Deny)
 	}
 }
 

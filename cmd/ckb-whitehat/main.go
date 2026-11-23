@@ -1043,7 +1043,9 @@ Flags:
   --chain                shorthand for --scope app,chain (refuses mainnet; strict RPC check)
   --no-chain-start       do not auto-start Docker devnet containers during init/run
   --no-scratch-pg        do not auto-start isolated Docker scratch Postgres during run
-  --agent claude|codex   which local agent CLI to drive (default: first detected)
+  --agent agy|claude|codex
+                         which local agent CLI to drive (default: first detected
+                         in order agy -> claude -> codex)
   --allowed-tools LIST   comma-separated tool allowlist passed to the agent's
                          --allowedTools. Default (offline PoCs only): %s
                          Override the whole list via CKB_WHITEHAT_ALLOWED_TOOLS.
