@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 type Kind string
 
 const (
+	Agy    Kind = "agy"
 	Claude Kind = "claude"
 	Codex  Kind = "codex"
 )
@@ -33,7 +35,13 @@ type Result struct {
 	Stalled, TimedOut bool
 }
 
-var Candidates = []Spec{{Claude, "claude", []string{"-p"}, true, true}, {Codex, "codex", []string{"exec"}, false, false}}
+// Candidates defines auto-detection priority when --agent is omitted:
+// agy -> claude -> codex.
+var Candidates = []Spec{
+	{Agy, "agy", []string{"-p"}, true, false},
+	{Claude, "claude", []string{"-p"}, true, true},
+	{Codex, "codex", []string{"exec"}, false, false},
+}
 
 func Detect() []Spec {
 	var out []Spec
@@ -57,12 +65,105 @@ func Find(found []Spec, name string) (Spec, error) {
 	if name != "" {
 		return Spec{}, fmt.Errorf("unknown agent: %s", name)
 	}
-	return Spec{}, errors.New("no agent CLI found (need `claude` or `codex` on PATH). We never ask for an API key - the agent binary carries its own auth.")
+	return Spec{}, errors.New("no agent CLI found (need `agy`, `claude`, or `codex` on PATH). We never ask for an API key - the agent binary carries its own auth.")
+}
+
+// agySettings represents the ephemeral JSON passed to `agy --settings`.
+type agySettings struct {
+	AgentMode               string         `json:"agentMode"`
+	ToolPermission          string         `json:"toolPermission"`
+	AllowNonWorkspaceAccess bool           `json:"allowNonWorkspaceAccess"`
+	Permissions             agyPermissions `json:"permissions"`
+}
+
+type agyPermissions struct {
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
+}
+
+// agySettingsJSON builds the ephemeral --settings payload for `agy`.
+// Crucially, we NEVER pass `--add-dir <target>` to `agy` because that would
+// trigger discovery/execution of untrusted `<target>/.agents/hooks.json`,
+// `mcp_config.json`, and `AGENTS.md`. Instead we keep cwd = workspace and
+// grant read-only access to `<target>` via `permissions.allow: ["read_file(<target>)"]`
+// paired with `permissions.deny: ["write_file(<target>)"]`.
+func agySettingsJSON(allowed []string, target string, readOnly bool) string {
+	var allowRules []string
+	if target != "" {
+		allowRules = append(allowRules, fmt.Sprintf("read_file(%s)", target))
+	}
+	if readOnly {
+		cfg := agySettings{
+			AgentMode:               "",
+			ToolPermission:          "request-review",
+			AllowNonWorkspaceAccess: false,
+			Permissions: agyPermissions{
+				Allow: allowRules,
+				Deny:  []string{"command(*)", "write_file(*)", "read_url(*)", "execute_url(*)", "mcp(*)"},
+			},
+		}
+		b, _ := json.Marshal(cfg)
+		return string(b)
+	}
+
+	// Translate `Bash(cmd:*)` entries into agy `command(cmd)` allow rules.
+	allowedCmds := map[string]bool{}
+	for _, entry := range allowed {
+		entry = strings.TrimSpace(entry)
+		if !strings.HasPrefix(entry, "Bash(") || !strings.HasSuffix(entry, ")") {
+			continue
+		}
+		inner := strings.TrimSpace(entry[len("Bash(") : len(entry)-1])
+		inner = strings.TrimSuffix(inner, ":*")
+		inner = strings.TrimSuffix(inner, "*")
+		inner = strings.TrimSpace(inner)
+		if inner == "" || allowedCmds[inner] {
+			continue
+		}
+		allowedCmds[inner] = true
+		allowRules = append(allowRules, fmt.Sprintf("command(%s)", inner))
+	}
+
+	// Explicitly deny high-risk commands unless the user explicitly allowed them
+	// (defense-in-depth in case the user's global agy settings.json has broad
+	// command allow rules).
+	var denyRules []string
+	for _, cmd := range []string{"curl", "wget", "psql", "sudo", "env"} {
+		if !allowedCmds[cmd] {
+			denyRules = append(denyRules, fmt.Sprintf("command(%s)", cmd))
+		}
+	}
+	if target != "" {
+		denyRules = append(denyRules, fmt.Sprintf("write_file(%s)", target))
+	}
+	denyRules = append(denyRules, "read_url(*)", "execute_url(*)", "mcp(*)")
+
+	cfg := agySettings{
+		AgentMode:               "accept-edits",
+		ToolPermission:          "request-review",
+		AllowNonWorkspaceAccess: false,
+		Permissions: agyPermissions{
+			Allow: allowRules,
+			Deny:  denyRules,
+		},
+	}
+	b, _ := json.Marshal(cfg)
+	return string(b)
 }
 
 func Args(s Spec, allowed []string, skip bool, target, prompt string) []string {
 	a := append([]string{}, s.Base...)
 	switch {
+	case s.Name == Agy:
+		// Put prompt immediately after `-p` and omit `--add-dir <target>` so
+		// agy never discovers or executes untrusted `<target>/.agents/hooks.json`.
+		a = append(a, prompt, "--output-format", "stream-json", "--disable-slash-commands")
+		if skip {
+			a = append(a, "--dangerously-skip-permissions")
+		} else {
+			a = append(a, "--settings", agySettingsJSON(allowed, target, false))
+		}
+		return a
 	case s.Name == Claude || s.ClaudeFlags:
 		if skip {
 			a = append([]string{"--dangerously-skip-permissions"}, a...)
@@ -98,12 +199,15 @@ func Args(s Spec, allowed []string, skip bool, target, prompt string) []string {
 }
 
 // ReadOnlyArgs builds CLI arguments for a strictly read-only inspection pass
-// (used by `ckb-whitehat init`): Claude gets `--permission-mode dontAsk` with
-// read-only tools only (`Read,Glob,Grep,LS`, never `Bash`/`Write`/`Edit`),
+// (used by `ckb-whitehat init`): Agy gets `--settings` denying all commands,
+// writes, URLs, and MCP while allowing `read_file(<target>)`; Claude gets
+// `--permission-mode dontAsk` with read-only tools only (`Read,Glob,Grep,LS`);
 // and Codex gets `--sandbox read-only`.
 func ReadOnlyArgs(s Spec, allowed []string, target, prompt string) []string {
 	a := append([]string{}, s.Base...)
 	switch {
+	case s.Name == Agy:
+		return append(a, prompt, "--output-format", "stream-json", "--disable-slash-commands", "--settings", agySettingsJSON(nil, target, true))
 	case s.Name == Claude || s.ClaudeFlags:
 		a = append(a, "--permission-mode", "dontAsk")
 		if s.AllowedTools && len(allowed) > 0 {

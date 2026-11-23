@@ -265,3 +265,54 @@ func TestStreamParserNilObserver(t *testing.T) {
 		t.Fatalf("Activity with nil observer:\ngot:  %q\nwant: %q", p.Activity(), "→ Bash ls\n")
 	}
 }
+
+func TestStreamParserAgyEvents(t *testing.T) {
+	var emitted []string
+	p := NewStreamParser(func(line string) {
+		emitted = append(emitted, line)
+	})
+
+	events := []string{
+		`{"event":"init","conversation_id":"c1","init":{"cwd":"/ws","permission_mode":"request-review"}}`,
+		`{"event":"step_update","step_update":{"step_index":0,"state":"DONE","step_type":"user_input"}}`,
+		`{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"/target/server/config.js"}}}}`,
+		`{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","output":"ok"}}}`,
+		`{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"node poc/f1.mjs"}}}}`,
+		`{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"tool","tool_name":"run_command"}}`,
+		`{"event":"step_update","step_update":{"step_index":3,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"curl --version"}}}}`,
+		`{"event":"step_update","step_update":{"step_index":3,"state":"ERROR","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","error":{"type":"TOOL_ERROR","message":"permission check failed for unsandboxed \"curl --version\": Permission denied."}}}}`,
+		`{"event":"step_update","step_update":{"step_index":4,"state":"ACTIVE","step_type":"agent_response","text_delta":"FINDING F1 "}}`,
+		`{"event":"step_update","step_update":{"step_index":4,"state":"ACTIVE","step_type":"agent_response","text_delta":"FIRED\nCKB-WHITEHAT-RESULT: "}}`,
+		`{"event":"step_update","step_update":{"step_index":4,"state":"DONE","step_type":"agent_response","text_delta":"findings=1 fired=1 report=FINDINGS.md\n"}}`,
+		`{"event":"result","result":{"status":"SUCCESS","response":"FINDING F1 FIRED\nCKB-WHITEHAT-RESULT: findings=1 fired=1 report=FINDINGS.md\n"}}`,
+	}
+
+	for _, e := range events {
+		p.FeedLine(e)
+	}
+
+	wantEmitted := []string{
+		"→ Read /target/server/config.js",
+		"→ Bash node poc/f1.mjs",
+		"→ Bash curl --version",
+		`⚠ permission denied: permission check failed for unsandboxed "curl --version": Permission denied.`,
+		"FINDING F1 FIRED",
+		"CKB-WHITEHAT-RESULT: findings=1 fired=1 report=FINDINGS.md",
+	}
+	if !reflect.DeepEqual(emitted, wantEmitted) {
+		t.Fatalf("agy emitted:\ngot:  %#v\nwant: %#v", emitted, wantEmitted)
+	}
+	wantPlain := "FINDING F1 FIRED\nCKB-WHITEHAT-RESULT: findings=1 fired=1 report=FINDINGS.md\n"
+	if p.PlainText() != wantPlain {
+		t.Fatalf("agy PlainText:\ngot:  %q\nwant: %q", p.PlainText(), wantPlain)
+	}
+	wantActivity := strings.Join([]string{
+		"→ Read /target/server/config.js",
+		"→ Bash node poc/f1.mjs",
+		"→ Bash curl --version",
+		`⚠ permission denied: permission check failed for unsandboxed "curl --version": Permission denied.`,
+	}, "\n") + "\n"
+	if p.Activity() != wantActivity {
+		t.Fatalf("agy Activity:\ngot:  %q\nwant: %q", p.Activity(), wantActivity)
+	}
+}

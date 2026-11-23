@@ -86,9 +86,11 @@ for manual lifecycle control.
   `run` automatically enables `Bash(cargo:*)` alongside Node PoCs (still keeping
   `curl`, `wget`, `psql`, and `env` blocked).
 
-It drives your local agent CLI
-(`claude -p --verbose --output-format stream-json --permission-mode dontAsk --setting-sources user`
-or `codex exec --full-auto --json`) through the challenge and writes
+It drives your local agent CLI — auto-detected in order **`agy` → `claude` → `codex`**
+(overridable via `--agent agy|claude|codex`):
+`agy -p <prompt> --output-format stream-json --disable-slash-commands --settings ...`,
+`claude -p --verbose --output-format stream-json --permission-mode dontAsk --setting-sources user`,
+or `codex exec --full-auto --json` — through the challenge and writes
 `FINDINGS.md` to a workspace outside the target repo. Structured JSONL events
 stream in real time as the agent runs tools and writes findings, and under
 Claude's `--permission-mode dontAsk` any unapproved tool fails immediately
@@ -118,15 +120,15 @@ The binary itself is self-contained, but a run needs local tooling:
 
 | Piece | Needed for | Without it |
 |---|---|---|
-| An agent CLI on PATH (`claude` or `codex`) | every `init` and `run` | `init` and `run` fail fast before starting, naming the missing binary |
+| An agent CLI on PATH (`agy`, `claude`, or `codex`) | every `init` and `run` (auto-detected `agy` → `claude` → `codex`) | `init` and `run` fail fast before starting, naming the missing binary |
 | **Node** (18+) | running Node `.mjs` PoCs and embedded CKB/Fiber packs | Node PoCs cannot execute; static findings only |
 | **Cargo / Rust** | Rust CKB-script targets (`Cargo.toml` / `ckb-testtool`) | Rust PoCs cannot compile/run; `init` flags `cargo` as missing |
 | **Docker** | `--chain` local CKB devnet + 2-node FNN harness (pre-funded CKB & `TEST_XUDT` channels) **and** isolated scratch Postgres (`127.0.0.1:5439`, throwaway credentials) for Postgres targets — zero pre-funded testnet addresses or host DB passwords needed | `--chain` cannot auto-start devnet; DB PoCs require setting `CKB_WHITEHAT_POSTGRES_URL` manually |
 | `CKB_WHITEHAT_POSTGRES_URL` *(optional)* | overriding the auto-provisioned Docker scratch Postgres with your own scratch DB | Docker auto-provisions an isolated `postgres:16-alpine` container automatically |
 
-`init` fails fast if no agent CLI (`claude` or `codex`) is on PATH, then runs
-the agent in **strictly read-only mode** (`Read,Glob,Grep,LS` — no `Bash`, no
-`Write`) to inspect the target repo's stack (JS/TS, Rust, Go, Python,
+`init` fails fast if no agent CLI (`agy`, `claude`, or `codex`) is on PATH, then runs
+the agent in **strictly read-only mode** (`--settings` denying commands/writes/URLs/MCP
+for `agy`; `Read,Glob,Grep,LS` for `claude`; `--sandbox read-only` for `codex`) to inspect the target repo's stack (JS/TS, Rust, Go, Python,
 Solidity, monorepos, etc.). It checks host prerequisites (Node, Postgres, FNN,
 and any extra tools discovered in the target), displays each suggested target
 dependency-install command (preferring safe `--ignore-scripts` for JS/TS by
@@ -168,6 +170,13 @@ the PoC runs against it in-tree: `node tapfiber/poc/attack.mjs`.
 
 ## Security model
 
+- `agy` runs with `-p <prompt> --output-format stream-json --disable-slash-commands --settings ...`
+  pinning `agentMode: "accept-edits"` (or `""` for read-only `init`),
+  `toolPermission: "request-review"`, `allowNonWorkspaceAccess: false`,
+  `read_file(<target>)` allow + `write_file(<target>)` / `read_url(*)` /
+  `execute_url(*)` / `mcp(*)` / `command(curl|wget|psql|sudo|env)` deny rules,
+  and **never** passes `--add-dir <target>` so untrusted target
+  `.agents/hooks.json` or `AGENTS.md` files are never discovered or executed.
 - Claude runs with
   `claude -p --verbose --output-format stream-json --permission-mode dontAsk --setting-sources user`
   and the default offline tool allowlist (`Bash(node:*)`,
