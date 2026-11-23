@@ -14,7 +14,7 @@ deterministic artifact.
 | Target | Layer | PoC command | Report |
 |---|---|---|---|
 | [dular](dular/) — M-Pesa STK-push → RUSD on-ramp over Fiber | app/DB/config (F1–F9) + on-chain C4.1–C4.5 | `node dular/poc/<finding>.mjs` | [dular/FINDINGS.md](dular/FINDINGS.md) |
-| [tapfiber](tapfiber/) — tap-to-pay order/receipt library (pure logic) | offline only (S1–S7) | `node tapfiber/poc/attack.mjs` | [tapfiber/FINDINGS.md](tapfiber/FINDINGS.md) |
+| [tapfiber](tapfiber/) — tap-to-pay order/receipt library (pure logic) | offline only (F1–F14) | `node tapfiber/poc/attack.mjs` | [tapfiber/FINDINGS.md](tapfiber/FINDINGS.md) |
 
 ## The method (installable skill)
 
