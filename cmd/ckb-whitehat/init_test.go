@@ -86,7 +86,7 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 		t.Fatalf("external local dir without --install-deps should skip command, got %+v", rec.Outcomes)
 	}
 
-	prompt := buildPrompt(ws, workspace.Config{Target: target, Scope: []string{"app"}}, false, nil)
+	prompt := buildPrompt(ws, workspace.Config{Target: target, Scope: []string{"app"}}, false, nil, nil, "", false)
 	for _, want := range []string{
 		"Init environment inspection (from setup.json):",
 		"detected stack: node, postgres",

@@ -58,10 +58,33 @@ Use it:
 
 ```sh
 ckb-whitehat init ~/src/target-repo --scope app,chain
-ckb-whitehat run --target ~/src/target-repo
+ckb-whitehat run --target ~/src/target-repo --chain
+ckb-whitehat chain status   # or chain up / chain down
 ckb-whitehat report --target ~/src/target-repo
 ckb-whitehat compare new-report.md baseline-report.md
 ```
+
+### Local CKB/Fiber Devnet Harness & On-Chain Verification
+
+Passing `--chain` (or `--scope app,chain`) to `init` or `run` **automatically
+starts** a self-contained local Docker CKB devnet (`127.0.0.1:8114`) + 2 peered
+Fiber (FNN) nodes (`127.0.0.1:8227` / `8327`) with pre-funded **CKB and
+`TEST_XUDT` channels** — **zero pre-funded testnet addresses or faucets
+required**. Use `ckb-whitehat chain status` / `chain up` / `chain down` anytime
+for manual lifecycle control.
+
+- **Mainnet refusal guard:** `--chain` checks CKB `get_blockchain_info` and FNN
+  `chain_hash` up front and hard-refuses if pointed at CKB mainnet.
+- **Strict post-run RPC verification:** When `--chain` is active and findings
+  fire, `ckb-whitehat` independently re-queries every reported CKB tx hash and
+  Fiber payment hash against the local RPC so hallucinated hashes cannot pass
+  completeness.
+- **Reusable CKB/Fiber invariant packs:** Materialized into
+  `<workspace>/packs/` (`chain-client.mjs`, `pack-payment-idempotency.mjs`,
+  `pack-hold-invoice-htlc.mjs`, `pack-udt-decimals.mjs`, `pack-self-custody.mjs`).
+- **Rust CKB-script support:** When `init` detects a Rust / `Cargo.toml` target,
+  `run` automatically enables `Bash(cargo:*)` alongside Node PoCs (still keeping
+  `curl`, `wget`, `psql`, and `env` blocked).
 
 It drives your local agent CLI
 (`claude -p --verbose --output-format stream-json --permission-mode dontAsk --setting-sources user`

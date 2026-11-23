@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nghiadang391/ckb-whitehat/internal/agent"
+	"github.com/nghiadang391/ckb-whitehat/internal/chain"
 	"github.com/nghiadang391/ckb-whitehat/internal/detect"
 	"github.com/nghiadang391/ckb-whitehat/internal/gates"
 	"github.com/nghiadang391/ckb-whitehat/internal/setup"
@@ -166,14 +167,83 @@ func initCmd(a []string) int {
 			die(err.Error(), 1)
 		}
 	}
+
+	// Bonus: if the read-only init agent detected a CKB/Fiber project and
+	// --chain was not passed yet, offer to enable chain scope & auto-start the
+	// local Docker devnet harness (or print a clear hint in non-TTY mode).
+	noChainStart := hasFlag(a, "no-chain-start")
+	if !cfg.Onchain && detectCKBFiberStack(&rec) {
+		if panelActive && !noInstall && !noChainStart {
+			if promptEnableChainPanel(panel, &paintMu, &panelVisible) {
+				cfg.Onchain = true
+				if !contains(cfg.Scope, "chain") {
+					cfg.Scope = append(cfg.Scope, "chain")
+				}
+				if err := m.SaveConfig(ws, cfg); err != nil {
+					die(err.Error(), 1)
+				}
+			}
+		} else {
+			fmt.Println("\nhint: detected CKB/Fiber stack — pass --chain to auto-start the local devnet + 2-node FNN harness and enable on-chain verification.")
+		}
+	}
+
+	// Option 1: auto-start local Docker CKB-devnet + 2-node FNN harness on --chain
+	// (no separate `ckb-whitehat chain up` needed).
+	if cfg.Onchain && !noChainStart {
+		manifest, mpath, cerr := ensureDevnetChain(ctx, m.Home, panelActive || hasFlag(a, "chain"))
+		if cerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not start local CKB/Fiber devnet harness: %v\n", cerr)
+			fmt.Fprintln(os.Stderr, "         start Docker and run `ckb-whitehat chain up` before `run --chain`.")
+		} else if manifest != nil {
+			fmt.Println("\nlocal CKB/Fiber devnet harness:")
+			printChainSummary(manifest, mpath)
+			cfg.Services = detect.Detect(ctx, detect.Options{})
+			_ = m.SaveConfig(ws, cfg)
+		}
+	}
+
 	if err := setup.SaveRecord(ws, rec); err != nil {
 		die(err.Error(), 1)
 	}
 
 	printPrerequisitesWithSetup(cfg, rec)
 	fmt.Printf("\n  setup  : %s\n", setup.RecordPath(ws))
-	fmt.Printf("  next   : ckb-whitehat run --target %s\n", cfg.Target)
+	if cfg.Onchain {
+		fmt.Printf("  next   : ckb-whitehat run --target %s --chain\n", cfg.Target)
+	} else {
+		fmt.Printf("  next   : ckb-whitehat run --target %s\n", cfg.Target)
+	}
 	return 0
+}
+
+func promptEnableChainPanel(p *LivePanel, paintMu *sync.Mutex, panelVisible *bool) bool {
+	lines := []promptLine{
+		{text: "CKB / Fiber stack detected in this repository.", tone: "cyan"},
+		{text: "Enable --chain scope and auto-start the local Docker CKB-devnet + 2-node FNN harness?", tone: ""},
+		{text: "(Zero pre-funded testnet addresses needed; includes CKB + TEST_XUDT channels.)", tone: "dim"},
+	}
+	paintMu.Lock()
+	p.SetStage("confirm")
+	p.SetSize(TerminalSize())
+	cols, _ := TerminalSize()
+	bar := " " + styleBold("a") + " enable --chain & start devnet  " + styleBold("d") + " keep app-only"
+	p.SetCommandPrompt("Chain Verification", lines, truncateDisplay(bar, cols))
+	fmt.Print("\x1b[?25l")
+	_, _ = os.Stdout.WriteString(p.Teardown() + p.Render())
+	*panelVisible = true
+	paintMu.Unlock()
+
+	key, err := ReadSingleKey()
+
+	paintMu.Lock()
+	*panelVisible = false
+	p.SetCommandPrompt("", nil, "")
+	_, _ = os.Stdout.WriteString(p.Teardown())
+	fmt.Print("\x1b[?25h")
+	paintMu.Unlock()
+
+	return err == nil && key == 'a'
 }
 
 func spawnWithLivePanel(ctx context.Context, spec agent.Spec, argv, env []string, cwd string, stall, maxRuntime time.Duration, panelActive bool, panel *LivePanel, paintMu *sync.Mutex, panelVisible *bool) (agent.Result, error) {
@@ -505,12 +575,15 @@ func printPrerequisitesWithSetup(cfg workspace.Config, rec setup.Record) {
 	}
 
 	if cfg.Onchain {
-		if fnnUp {
+		h := chain.NewHarness("")
+		st := h.Status(ctx)
+		if st.Ready() {
+			fmt.Printf("  ok        CKB devnet (tip=%d) + 2 FNN nodes + %d channel(s) ready\n", st.CKBTip, len(st.Channels))
+		} else if fnnUp {
 			fmt.Println("  ok        Fiber (FNN) node detected (on-chain evidence layer is ready)")
 		} else {
-			fmt.Println("  warning   chain scope selected but no Fiber (FNN) node is reachable")
-			fmt.Println("            on 127.0.0.1:8227/8327/8386/8387. Start your 2-node testnet stack")
-			fmt.Println("            first, or drop the chain scope - this run cannot produce on-chain evidence.")
+			fmt.Println("  warning   chain scope selected but no local CKB/Fiber devnet harness is running")
+			fmt.Println("            run `ckb-whitehat chain up` (requires Docker) or pass --chain during run to auto-start it.")
 		}
 	}
 }
