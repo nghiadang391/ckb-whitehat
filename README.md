@@ -89,8 +89,8 @@ for manual lifecycle control.
   Rust (`cargo test` / `ckb-testtool`), Go, Python, and shell exploration tools
   work out of the box alongside Node PoCs.
 
-It drives your local agent CLI — auto-detected in order **`agy` → `claude` → `codex`**
-(overridable via `--agent agy|claude|codex`):
+It drives your local agent CLI — auto-detected in order **`claude` → `agy` → `codex`**
+(overridable via `--agent claude|agy|codex`):
 `agy -p <prompt> --output-format stream-json --disable-slash-commands --settings ...`,
 `claude -p --verbose --output-format stream-json --permission-mode dontAsk --setting-sources user`,
 or `codex exec --full-auto --json` — through the challenge and writes
@@ -123,7 +123,7 @@ The binary itself is self-contained, but a run needs local tooling:
 
 | Piece | Needed for | Without it |
 |---|---|---|
-| An agent CLI on PATH (`agy`, `claude`, or `codex`) | every `init` and `run` (auto-detected `agy` → `claude` → `codex`) | `init` and `run` fail fast before starting, naming the missing binary |
+| An agent CLI on PATH (`claude`, `agy`, or `codex`) | every `init` and `run` (auto-detected `claude` → `agy` → `codex`) | `init` and `run` fail fast before starting, naming the missing binary |
 | **Node** (18+) | running Node `.mjs` PoCs and embedded CKB/Fiber packs | Node PoCs cannot execute; static findings only |
 | **Cargo / Rust** | Rust CKB-script targets (`Cargo.toml` / `ckb-testtool`) | Rust PoCs cannot compile/run; `init` flags `cargo` as missing |
 | **Docker** | `--chain` local CKB devnet + 2-node FNN harness (pre-funded CKB & `TEST_XUDT` channels) **and** isolated scratch Postgres (`127.0.0.1:5439`, throwaway credentials) for Postgres targets — zero pre-funded testnet addresses or host DB passwords needed | `--chain` cannot auto-start devnet; DB PoCs require setting `CKB_WHITEHAT_POSTGRES_URL` manually |

@@ -162,6 +162,18 @@ func TestBuildPromptDepsState(t *testing.T) {
 		if strings.Contains(p, "target dependencies are") {
 			t.Fatalf("expected no npm deps line for repo without package.json")
 		}
+		for _, want := range []string{
+			"pre-push defensive security verification",
+			"deterministic defensive",
+			"100% local and offline",
+		} {
+			if !strings.Contains(p, want) {
+				t.Fatalf("buildPrompt missing defensive pre-push framing %q", want)
+			}
+		}
+		if strings.Contains(strings.ToLower(p), "attack pack") {
+			t.Fatalf("buildPrompt should not use offensive 'attack pack' wording")
+		}
 	})
 }
 
