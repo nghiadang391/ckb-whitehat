@@ -98,15 +98,9 @@ func TestAllowedToolsBareFlagKeepsDefault(t *testing.T) {
 	}
 }
 
-func TestDefaultAllowedToolsSafeOfflineSet(t *testing.T) {
+func TestDefaultAllowedToolsBroadAllowWithStrictDenylist(t *testing.T) {
 	for _, want := range []string{
-		"Bash(node:*)",
-		"Bash(pg_isready:*)",
-		"Bash(git:*)",
-		"Bash(grep:*)",
-		"Bash(ls:*)",
-		"Bash(mkdir:*)",
-		"Bash(cd:*)",
+		"Bash(*)",
 		"Read",
 		"Write",
 		"Edit",
@@ -118,10 +112,10 @@ func TestDefaultAllowedToolsSafeOfflineSet(t *testing.T) {
 			t.Errorf("defaultAllowedTools missing %q: %v", want, defaultAllowedTools)
 		}
 	}
-	for _, forbidden := range []string{"curl", "wget", "psql", "env"} {
+	for _, forbidden := range []string{"curl", "wget", "psql", "env", "WebFetch", "WebSearch"} {
 		for _, tool := range defaultAllowedTools {
 			if strContains(tool, forbidden) {
-				t.Errorf("defaultAllowedTools must exclude %q, found %q", forbidden, tool)
+				t.Errorf("defaultAllowedTools must not explicitly include %q, found %q", forbidden, tool)
 			}
 		}
 	}

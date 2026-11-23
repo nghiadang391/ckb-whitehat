@@ -253,9 +253,9 @@ func isRustStack(target string, rec *setup.Record) bool {
 }
 
 // effectiveAllowedTools returns the tool allowlist for `run`: explicit flags
-// or CKB_WHITEHAT_ALLOWED_TOOLS take precedence verbatim; otherwise starts
-// from defaultAllowedTools and adds `Bash(cargo:*)` when auditing a Rust /
-// CKB-script target (keeping curl/wget/psql/env strictly excluded).
+// or CKB_WHITEHAT_ALLOWED_TOOLS take precedence verbatim; otherwise uses
+// defaultAllowedTools (`Bash(*)` + file tools, paired with the agent's strict
+// denylist for destructive/exfil/remote-mutating commands).
 func effectiveAllowedTools(a []string, target string, rec *setup.Record) []string {
 	for _, s := range a {
 		if strings.HasPrefix(s, "--allowed-tools=") {
@@ -268,9 +268,5 @@ func effectiveAllowedTools(a []string, target string, rec *setup.Record) []strin
 	if _, ok := os.LookupEnv("CKB_WHITEHAT_ALLOWED_TOOLS"); ok {
 		return allowedToolsList(a)
 	}
-	out := append([]string{}, defaultAllowedTools...)
-	if isRustStack(target, rec) && !contains(out, "Bash(cargo:*)") {
-		out = append(out, "Bash(cargo:*)")
-	}
-	return out
+	return append([]string{}, defaultAllowedTools...)
 }

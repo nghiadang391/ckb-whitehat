@@ -316,3 +316,19 @@ func TestStreamParserAgyEvents(t *testing.T) {
 		t.Fatalf("agy Activity:\ngot:  %q\nwant: %q", p.Activity(), wantActivity)
 	}
 }
+
+func TestStreamParserAgyHeadlessDeniedActionsWarning(t *testing.T) {
+	var emitted []string
+	p := NewStreamParser(func(line string) { emitted = append(emitted, line) })
+
+	p.FeedLine(`{"event":"init","conversation_id":"c2","init":{"cwd":"/ws","permission_mode":"request-review"}}`)
+	p.FeedLine(`{"event":"result","result":{"status":"SUCCESS","response":"","denied_actions":[{"action":"command","display_name":"Bash"}]}}`)
+
+	want := []string{"⚠ permission denied: agy headless run aborted by unapproved action(s): command (Bash)"}
+	if !reflect.DeepEqual(emitted, want) {
+		t.Fatalf("emitted:\ngot:  %#v\nwant: %#v", emitted, want)
+	}
+	if !strings.Contains(p.Activity(), "command (Bash)") {
+		t.Fatalf("expected denied_actions recorded in Activity, got %q", p.Activity())
+	}
+}
