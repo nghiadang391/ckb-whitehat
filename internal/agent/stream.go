@@ -93,10 +93,16 @@ type agyToolInfo struct {
 	} `json:"error,omitempty"`
 }
 
+type agyDeniedAction struct {
+	Action      string `json:"action"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
 type agyStreamResult struct {
-	Status   string `json:"status"`
-	Response string `json:"response,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Status        string            `json:"status"`
+	Response      string            `json:"response,omitempty"`
+	Error         string            `json:"error,omitempty"`
+	DeniedActions []agyDeniedAction `json:"denied_actions,omitempty"`
 }
 
 type claudeStreamMessage struct {
@@ -403,6 +409,21 @@ func (p *StreamParser) handleAgyEvent(env streamEnvelope) bool {
 		if trimmed := strings.TrimSpace(res.Response); trimmed != "" && !strings.Contains(p.plainText.String(), trimmed) {
 			p.appendPlainText(res.Response)
 			p.emitTextLines(res.Response)
+		} else if trimmed == "" && len(res.DeniedActions) > 0 {
+			var parts []string
+			for _, d := range res.DeniedActions {
+				label := strings.TrimSpace(d.Action)
+				if dn := strings.TrimSpace(d.DisplayName); dn != "" && !strings.EqualFold(dn, label) {
+					label = label + " (" + dn + ")"
+				}
+				if label != "" {
+					parts = append(parts, label)
+				}
+			}
+			if len(parts) == 0 {
+				parts = []string{"unknown"}
+			}
+			p.recordActivity("⚠ permission denied: agy headless run aborted by unapproved action(s): " + strings.Join(parts, ", "))
 		}
 		return true
 	default:

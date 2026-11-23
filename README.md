@@ -82,9 +82,12 @@ for manual lifecycle control.
 - **Reusable CKB/Fiber invariant packs:** Materialized into
   `<workspace>/packs/` (`chain-client.mjs`, `pack-payment-idempotency.mjs`,
   `pack-hold-invoice-htlc.mjs`, `pack-udt-decimals.mjs`, `pack-self-custody.mjs`).
-- **Rust CKB-script support:** When `init` detects a Rust / `Cargo.toml` target,
-  `run` automatically enables `Bash(cargo:*)` alongside Node PoCs (still keeping
-  `curl`, `wget`, `psql`, and `env` blocked).
+- **Polyglot stack support (Node, Rust, Go, Python, CKB-scripts):** `run` uses
+  a broad safe allowlist (`Bash(*)` / `command(*)`) paired with a strict
+  high-risk denylist (`rm -rf`, `git push`, `git reset --hard`, `sudo`, `curl`,
+  `wget`, `ssh`, `psql`, `env`, web, MCP, and writes to the target repo), so
+  Rust (`cargo test` / `ckb-testtool`), Go, Python, and shell exploration tools
+  work out of the box alongside Node PoCs.
 
 It drives your local agent CLI — auto-detected in order **`agy` → `claude` → `codex`**
 (overridable via `--agent agy|claude|codex`):
@@ -173,33 +176,35 @@ the PoC runs against it in-tree: `node tapfiber/poc/attack.mjs`.
 - `agy` runs with `-p <prompt> --output-format stream-json --disable-slash-commands --settings ...`
   pinning `agentMode: "accept-edits"` (or `""` for read-only `init`),
   `toolPermission: "request-review"`, `allowNonWorkspaceAccess: false`,
-  `read_file(<target>)` allow + `write_file(<target>)` / `read_url(*)` /
-  `execute_url(*)` / `mcp(*)` / `command(curl|wget|psql|sudo|env)` deny rules,
-  and **never** passes `--add-dir <target>` so untrusted target
-  `.agents/hooks.json` or `AGENTS.md` files are never discovered or executed.
+  `read_file(<target>)` + `command(*)` allow paired with explicit deny rules
+  (`Deny > Ask > Allow`) blocking `write_file(<target>)`, `read_url(*)`,
+  `execute_url(*)`, `mcp(*)`, and dangerous commands (`rm -rf`, `rm -fr`,
+  `git push`, `git reset --hard`, `git clean`, `git remote`, `sudo`, `su`,
+  `dd`, `mkfs`, `chmod`, `chown`, `shutdown`, `reboot`, `curl`, `wget`, `ssh`,
+  `scp`, `rsync`, `nc`, `ncat`, `psql`, `env`, `printenv`). It **never** passes
+  `--add-dir <target>` so untrusted target `.agents/hooks.json` or `AGENTS.md`
+  files are never discovered or executed.
 - Claude runs with
   `claude -p --verbose --output-format stream-json --permission-mode dontAsk --setting-sources user`
-  and the default offline tool allowlist (`Bash(node:*)`,
-  `Bash(pg_isready:*)`, `Bash(git:*)`, `Bash(grep:*)`, `Bash(ls:*)`,
-  `Bash(mkdir:*)`, `Bash(cd:*)`, plus `Bash(cargo:*)` automatically on Rust /
-  CKB-script targets, and `Read`, `Write`, `Edit`, `Grep`, `Glob`, `LS` —
-  deliberately excluding `curl`, `wget`, `psql`, and command launchers like
-  `env`). Unapproved tools fail
+  with broad local tools (`Bash(*)`, `Read`, `Write`, `Edit`, `Grep`, `Glob`,
+  `LS`) paired with `--disallowedTools` blocking the same high-risk command
+  prefixes plus `WebFetch` and `WebSearch`. Disallowed tools fail
   immediately instead of silently blocking until stall timeout, and
   `--setting-sources user` prevents project-local `.claude/` settings in an
   untrusted target repo from overriding permissions or hooks. During `init`,
-  inspection runs strictly read-only (`Read,Glob,Grep,LS` for Claude;
-  `--sandbox read-only` for Codex), and any suggested setup commands are
-  confined inside the target directory, scanned for shell/injection risks, and
-  require explicit per-command approval on a TTY. Codex runs with
-  `codex exec --full-auto --json` and ignores `--allowed-tools` entirely (the
-  CLI says so explicitly instead of implying enforcement).
+  inspection runs strictly read-only (`command(*)`/`write_file(*)` denied for
+  `agy`; `Read,Glob,Grep,LS` for Claude; `--sandbox read-only` for Codex), and
+  any suggested setup commands are confined inside the target directory, scanned
+  for shell/injection risks, and require explicit per-command approval on a TTY.
+  Codex runs with `codex exec --full-auto --json` and ignores `--allowed-tools`
+  entirely (the CLI says so explicitly instead of implying enforcement).
 - **Mainnet refusal & strict on-chain verification**: `--chain` checks CKB
   `get_blockchain_info` and FNN `chain_hash` before running and hard-refuses
   CKB mainnet; post-run completeness independently re-verifies every reported
   tx/payment/channel hash against the local devnet CKB/FNN RPC.
-- **Allowlists are still prompt/CLI level, not a sandbox**: `Bash(node:*)`
-  can reach the network and filesystem.
+- **Allowlists/denylists are guardrails, not an OS sandbox**: any allowed
+  language runtime (`node`, `python3`, `cargo`, `Bash(*)`) can reach the
+  network and filesystem.
 - The target is treated as untrusted *content* — the skill instructs the
   agent to never execute code from the target tree, and PoCs run in the
   workspace — but there is **no OS-level isolation boundary** between the

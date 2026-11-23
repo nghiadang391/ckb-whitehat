@@ -10,33 +10,19 @@ import (
 	"github.com/nghiadang391/ckb-whitehat/internal/workspace"
 )
 
-func TestEffectiveAllowedToolsAddsCargoForRustTarget(t *testing.T) {
+func TestEffectiveAllowedToolsBroadDefaultAndExplicitOverride(t *testing.T) {
 	rustDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(rustDir, "Cargo.toml"), []byte("[package]\nname=\"lock\"\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	got := effectiveAllowedTools(nil, rustDir, nil)
-	if !contains(got, "Bash(cargo:*)") {
-		t.Fatalf("expected Bash(cargo:*) for Rust target, got %v", got)
-	}
-	for _, forbidden := range []string{"curl", "wget", "psql", "env"} {
-		for _, tool := range got {
-			if strings.Contains(tool, forbidden) {
-				t.Fatalf("forbidden tool %q leaked into Rust allowlist: %v", forbidden, got)
-			}
-		}
-	}
-
-	// Non-Rust target must NOT include Bash(cargo:*).
-	jsDir := t.TempDir()
-	gotJS := effectiveAllowedTools(nil, jsDir, nil)
-	if contains(gotJS, "Bash(cargo:*)") {
-		t.Fatalf("non-Rust target should not include Bash(cargo:*): %v", gotJS)
+	if !contains(got, "Bash(*)") {
+		t.Fatalf("expected broad Bash(*) in default effectiveAllowedTools, got %v", got)
 	}
 
 	// Explicit --allowed-tools overrides everything verbatim.
 	explicit := effectiveAllowedTools([]string{"--allowed-tools=Read,Write"}, rustDir, nil)
-	if len(explicit) != 2 || contains(explicit, "Bash(cargo:*)") {
+	if len(explicit) != 2 || contains(explicit, "Bash(*)") {
 		t.Fatalf("explicit --allowed-tools must not be modified: %v", explicit)
 	}
 }

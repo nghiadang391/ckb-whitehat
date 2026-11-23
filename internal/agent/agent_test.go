@@ -35,15 +35,17 @@ func TestCandidatesDefaultOrder(t *testing.T) {
 
 func TestArgs(t *testing.T) {
 	claude := candidateByKind(t, Claude)
+	wantClaudeDisallowed := strings.Join(claudeDisallowedTools(nil), ",")
 
-	// Claude default (skip=false) with allowed tools.
+	// Claude default (skip=false) with allowed tools + strict disallowedTools.
 	// --add-dir <directories...> is variadic, so non-variadic flags and "--"
 	// must separate it from the positional prompt.
-	got := Args(claude, []string{"Read", "Write"}, false, "/target", "prompt")
+	got := Args(claude, []string{"Bash(*)", "Read", "Write"}, false, "/target", "prompt")
 	want := []string{
 		"-p",
 		"--permission-mode", "dontAsk",
-		"--allowedTools", "Read,Write",
+		"--allowedTools", "Bash(*),Read,Write",
+		"--disallowedTools", wantClaudeDisallowed,
 		"--add-dir", "/target",
 		"--setting-sources", "user",
 		"--verbose",
@@ -54,12 +56,26 @@ func TestArgs(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("claude skip=false:\ngot:  %#v\nwant: %#v", got, want)
 	}
+	for _, mustDeny := range []string{"Bash(rm -rf:*)", "Bash(git push:*)", "Bash(sudo:*)", "Bash(curl:*)", "WebFetch", "WebSearch"} {
+		if !strings.Contains(wantClaudeDisallowed, mustDeny) {
+			t.Fatalf("claude disallowedTools missing %q: %s", mustDeny, wantClaudeDisallowed)
+		}
+	}
 
-	// Claude skip=false with no allowed tools omits --allowedTools.
+	// Claude skip=false with explicit Bash(curl:*) exempts curl from disallowedTools.
+	gotCurl := Args(claude, []string{"Bash(*)", "Bash(curl:*)", "Read"}, false, "/target", "prompt")
+	for i := 0; i < len(gotCurl)-1; i++ {
+		if gotCurl[i] == "--disallowedTools" && strings.Contains(gotCurl[i+1], "Bash(curl:*)") {
+			t.Fatalf("explicit Bash(curl:*) should be exempted from disallowedTools: %s", gotCurl[i+1])
+		}
+	}
+
+	// Claude skip=false with no allowed tools omits --allowedTools but keeps --disallowedTools.
 	got = Args(claude, nil, false, "/target", "prompt")
 	want = []string{
 		"-p",
 		"--permission-mode", "dontAsk",
+		"--disallowedTools", wantClaudeDisallowed,
 		"--add-dir", "/target",
 		"--setting-sources", "user",
 		"--verbose",
@@ -71,7 +87,7 @@ func TestArgs(t *testing.T) {
 		t.Fatalf("claude skip=false no allowed:\ngot:  %#v\nwant: %#v", got, want)
 	}
 
-	// Claude skip=true prepends --dangerously-skip-permissions and omits dontAsk/allowedTools.
+	// Claude skip=true prepends --dangerously-skip-permissions and omits dontAsk/allowedTools/disallowedTools.
 	got = Args(claude, []string{"Read", "Write"}, true, "/target", "prompt")
 	want = []string{
 		"--dangerously-skip-permissions",
@@ -117,8 +133,9 @@ func TestArgs(t *testing.T) {
 		t.Fatalf("codex skip=true:\ngot:  %#v\nwant: %#v", got, want)
 	}
 
+	// Agy default (Bash(*)) maps to command(*) in allow + full high-risk deny list.
 	agy := candidateByKind(t, Agy)
-	got = Args(agy, []string{"Bash(node:*)", "Bash(git:*)", "Read"}, false, "/target", "prompt")
+	got = Args(agy, []string{"Bash(*)", "Read", "Write"}, false, "/target", "prompt")
 	if len(got) != 7 || got[0] != "-p" || got[1] != "prompt" || got[2] != "--output-format" || got[3] != "stream-json" || got[4] != "--disable-slash-commands" || got[5] != "--settings" {
 		t.Fatalf("agy skip=false args shape unexpected: %#v", got)
 	}
@@ -134,16 +151,44 @@ func TestArgs(t *testing.T) {
 	if cfg.AgentMode != "accept-edits" || cfg.ToolPermission != "request-review" || cfg.AllowNonWorkspaceAccess {
 		t.Fatalf("unexpected agy modes: %+v", cfg)
 	}
-	wantAllow := []string{"read_file(/target)", "command(node)", "command(git)"}
+	wantAllow := []string{"read_file(/target)", "command(*)"}
 	if !reflect.DeepEqual(cfg.Permissions.Allow, wantAllow) {
 		t.Fatalf("agy allow:\ngot:  %#v\nwant: %#v", cfg.Permissions.Allow, wantAllow)
 	}
-	wantDeny := []string{"command(curl)", "command(wget)", "command(psql)", "command(sudo)", "command(env)", "write_file(/target)", "read_url(*)", "execute_url(*)", "mcp(*)"}
-	if !reflect.DeepEqual(cfg.Permissions.Deny, wantDeny) {
-		t.Fatalf("agy deny:\ngot:  %#v\nwant: %#v", cfg.Permissions.Deny, wantDeny)
+	for _, mustDeny := range []string{
+		"command(rm -rf)", "command(rm -fr)", "command(git push)", "command(git reset --hard)",
+		"command(sudo)", "command(curl)", "command(wget)", "command(psql)", "command(env)",
+		"write_file(/target)", "read_url(*)", "execute_url(*)", "mcp(*)",
+	} {
+		found := false
+		for _, d := range cfg.Permissions.Deny {
+			if d == mustDeny {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("agy deny missing %q: %#v", mustDeny, cfg.Permissions.Deny)
+		}
 	}
 
-	got = Args(agy, []string{"Bash(node:*)"}, true, "/target", "prompt")
+	// Agy with explicit narrow Bash list preserves narrow command allow rules.
+	gotNarrow := Args(agy, []string{"Bash(node:*)", "Bash(curl:*)", "Read"}, false, "/target", "prompt")
+	var narrowCfg agySettings
+	if err := json.Unmarshal([]byte(gotNarrow[6]), &narrowCfg); err != nil {
+		t.Fatalf("invalid narrow agy settings JSON: %v", err)
+	}
+	wantNarrowAllow := []string{"read_file(/target)", "command(node)", "command(curl)"}
+	if !reflect.DeepEqual(narrowCfg.Permissions.Allow, wantNarrowAllow) {
+		t.Fatalf("agy narrow allow:\ngot:  %#v\nwant: %#v", narrowCfg.Permissions.Allow, wantNarrowAllow)
+	}
+	for _, d := range narrowCfg.Permissions.Deny {
+		if d == "command(curl)" {
+			t.Fatalf("explicit Bash(curl:*) must be exempted from agy deny: %#v", narrowCfg.Permissions.Deny)
+		}
+	}
+
+	got = Args(agy, []string{"Bash(*)"}, true, "/target", "prompt")
 	want = []string{"-p", "prompt", "--output-format", "stream-json", "--disable-slash-commands", "--dangerously-skip-permissions"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("agy skip=true:\ngot:  %#v\nwant: %#v", got, want)

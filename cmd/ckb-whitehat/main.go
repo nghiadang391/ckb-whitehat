@@ -35,28 +35,18 @@ import (
 // Local development builds intentionally report "dev".
 var version = "dev"
 
-// Default allowlist: offline triage, workspace management, and PoC execution.
-// Includes the safe local shell commands that SKILL.md asks for (node,
-// pg_isready, git, grep, ls, mkdir, cd) plus the built-in file tools.
+// Default allowlist: broad safe local execution (`Bash(*)`) plus built-in file
+// tools, paired with an explicit high-risk command denylist enforced via
+// `agent.DefaultDeniedCommands` (blocking `rm -rf`, `git push`, `git reset --hard`,
+// `sudo`, `curl`, `wget`, `ssh`, `psql`, `env`, web fetches, MCP, and writes to
+// the target repo). This lets audits work across arbitrary target stacks (Node,
+// Rust, Go, Python, shell utilities like `find`/`jq`) and prevents `agy`
+// headless mode from aborting on unlisted-command Ask prompts. Extra or narrower
+// overrides are one flag away:
 //
-// Deliberately NOT included: curl and wget (a hostile README could steer the
-// agent into exfiltrating local files to an attacker URL, and the challenge
-// forbids live third-party calls), psql (could hit a production database), and
-// command launchers like env (which could bypass command-name exclusions).
-// Claude now runs with --permission-mode dontAsk + --output-format stream-json
-// + --setting-sources user, so unapproved tools fail immediately with a
-// visible TUI error instead of silently blocking until stall timeout. Extra
-// tools are one flag away for PoC classes that genuinely need them:
-//
-//	--allowed-tools "Bash(node:*),Bash(curl:*),Bash(psql:*),Read,Write,Edit,Grep,Glob,LS"
+//	--allowed-tools "Bash(*),Bash(curl:*),Read,Write,Edit,Grep,Glob,LS"
 var defaultAllowedTools = []string{
-	"Bash(node:*)",
-	"Bash(pg_isready:*)",
-	"Bash(git:*)",
-	"Bash(grep:*)",
-	"Bash(ls:*)",
-	"Bash(mkdir:*)",
-	"Bash(cd:*)",
+	"Bash(*)",
 	"Read",
 	"Write",
 	"Edit",
@@ -379,7 +369,7 @@ The human decides; your answer will be fed back to you on resume.`
 	}
 	var rustNote string
 	if isRustStack(cfg.Target, setupRec) {
-		rustNote = "\n- Rust / CKB-script target detected: `Bash(cargo:*)` is enabled; you may write deterministic Rust PoC tests (`cargo test` / `ckb-testtool`) inside the PoC output dir or workspace alongside/instead of Node `.mjs` PoCs.\n"
+		rustNote = "\n- Rust / CKB-script target detected: you may write deterministic Rust PoC tests (`cargo test` / `ckb-testtool`) inside the PoC output dir or workspace alongside/instead of Node `.mjs` PoCs.\n"
 	}
 	pocDir := filepath.Join(ws, "poc")
 	reportPath := filepath.Join(ws, "FINDINGS.md")
@@ -563,6 +553,11 @@ func runCmd(a []string) int {
 	fmt.Printf("  log        : %s\n", logPath)
 	if agentSpec.AllowedTools {
 		fmt.Printf("  allow tools: %s\n", strings.Join(allowed, ", "))
+		if !skip {
+			if denied := agent.DeniedCommands(allowed); len(denied) > 0 {
+				fmt.Printf("  deny cmds  : %s\n", strings.Join(denied, ", "))
+			}
+		}
 	} else {
 		// This agent CLI has no --allowed-tools flag: the list would not be
 		// enforced (audit H1.2). Label it as unenforced instead of
@@ -1046,8 +1041,10 @@ Flags:
   --agent agy|claude|codex
                          which local agent CLI to drive (default: first detected
                          in order agy -> claude -> codex)
-  --allowed-tools LIST   comma-separated tool allowlist passed to the agent's
-                         --allowedTools. Default (offline PoCs only): %s
+  --allowed-tools LIST   comma-separated tool allowlist passed to the agent
+                         (paired with a strict denylist blocking rm -rf,
+                         git push, sudo, curl/wget/ssh/psql/env, web, MCP, and
+                         target writes). Default: %s
                          Override the whole list via CKB_WHITEHAT_ALLOWED_TOOLS.
   --dangerously-skip-permissions | --yolo
                          blanket bypass of ALL agent permission checks (opt-in,

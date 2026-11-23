@@ -68,6 +68,106 @@ func Find(found []Spec, name string) (Spec, error) {
 	return Spec{}, errors.New("no agent CLI found (need `agy`, `claude`, or `codex` on PATH). We never ask for an API key - the agent binary carries its own auth.")
 }
 
+// DefaultDeniedCommands lists high-risk shell command prefixes blocked by
+// default for both `agy` and `claude` runs (unless explicitly requested via
+// `--allowed-tools`, e.g. `Bash(curl:*)`). Keeping a broad allow (`Bash(*)` /
+// `command(*)`) paired with explicit deny rules lets audits work across any
+// target stack (Node, Rust, Go, Python, shell utilities like `find`/`jq`) and
+// prevents `agy` headless mode from aborting on unlisted-command Ask prompts,
+// while still guarding against accidental destructive, remote-mutating, or
+// exfiltration commands.
+var DefaultDeniedCommands = []string{
+	// Destructive filesystem / system / privilege escalation
+	"rm -rf",
+	"rm -fr",
+	"sudo",
+	"su",
+	"dd",
+	"mkfs",
+	"chmod",
+	"chown",
+	"shutdown",
+	"reboot",
+	// Git remote & destructive history mutation
+	"git push",
+	"git reset --hard",
+	"git clean",
+	"git remote",
+	// Network exfiltration, host DB probing, credential/env dumping
+	"curl",
+	"wget",
+	"ssh",
+	"scp",
+	"rsync",
+	"nc",
+	"ncat",
+	"psql",
+	"env",
+	"printenv",
+}
+
+// parseAllowedBash extracts wildcard Bash allowance ("Bash", "Bash(*)",
+// "Bash(:*)") and any explicitly named `Bash(<cmd>:*)` commands from allowed.
+func parseAllowedBash(allowed []string) (allowAll bool, specific []string, specificSet map[string]bool) {
+	specificSet = map[string]bool{}
+	for _, entry := range allowed {
+		entry = strings.TrimSpace(entry)
+		if entry == "Bash" || entry == "Bash(*)" || entry == "Bash(:*)" {
+			allowAll = true
+			continue
+		}
+		if !strings.HasPrefix(entry, "Bash(") || !strings.HasSuffix(entry, ")") {
+			continue
+		}
+		inner := strings.TrimSpace(entry[len("Bash(") : len(entry)-1])
+		inner = strings.TrimSuffix(inner, ":*")
+		inner = strings.TrimSuffix(inner, "*")
+		inner = strings.TrimSpace(inner)
+		if inner == "" {
+			allowAll = true
+			continue
+		}
+		if !specificSet[inner] {
+			specificSet[inner] = true
+			specific = append(specific, inner)
+		}
+	}
+	return allowAll, specific, specificSet
+}
+
+// DeniedCommands returns the effective list of denied shell command prefixes
+// for a run given the caller's allowed-tools list (any command explicitly
+// allowed by name, such as `Bash(curl:*)`, is exempted).
+func DeniedCommands(allowed []string) []string {
+	_, _, explicit := parseAllowedBash(allowed)
+	out := make([]string, 0, len(DefaultDeniedCommands))
+	for _, cmd := range DefaultDeniedCommands {
+		if !explicit[cmd] {
+			out = append(out, cmd)
+		}
+	}
+	return out
+}
+
+func claudeDisallowedTools(allowed []string) []string {
+	denied := DeniedCommands(allowed)
+	out := make([]string, 0, len(denied)+2)
+	for _, cmd := range denied {
+		out = append(out, fmt.Sprintf("Bash(%s:*)", cmd))
+	}
+	// Block live web fetches/searches unless explicitly requested in allowed.
+	allowWeb := map[string]bool{}
+	for _, entry := range allowed {
+		allowWeb[strings.TrimSpace(entry)] = true
+	}
+	for _, webTool := range []string{"WebFetch", "WebSearch"} {
+		if !allowWeb[webTool] {
+			out = append(out, webTool)
+		}
+	}
+	return out
+}
+
 // agySettings represents the ephemeral JSON passed to `agy --settings`.
 type agySettings struct {
 	AgentMode               string         `json:"agentMode"`
@@ -87,6 +187,10 @@ type agyPermissions struct {
 // `mcp_config.json`, and `AGENTS.md`. Instead we keep cwd = workspace and
 // grant read-only access to `<target>` via `permissions.allow: ["read_file(<target>)"]`
 // paired with `permissions.deny: ["write_file(<target>)"]`.
+//
+// In `agy`, explicit `deny` rules take strict precedence over `allow`
+// (`Deny > Ask > Allow`) and return a recoverable tool error, whereas any
+// unlisted command falling back to `Ask` aborts headless mode immediately.
 func agySettingsJSON(allowed []string, target string, readOnly bool) string {
 	var allowRules []string
 	if target != "" {
@@ -106,32 +210,18 @@ func agySettingsJSON(allowed []string, target string, readOnly bool) string {
 		return string(b)
 	}
 
-	// Translate `Bash(cmd:*)` entries into agy `command(cmd)` allow rules.
-	allowedCmds := map[string]bool{}
-	for _, entry := range allowed {
-		entry = strings.TrimSpace(entry)
-		if !strings.HasPrefix(entry, "Bash(") || !strings.HasSuffix(entry, ")") {
-			continue
+	allowAllBash, specificCmds, _ := parseAllowedBash(allowed)
+	if allowAllBash {
+		allowRules = append(allowRules, "command(*)")
+	} else {
+		for _, cmd := range specificCmds {
+			allowRules = append(allowRules, fmt.Sprintf("command(%s)", cmd))
 		}
-		inner := strings.TrimSpace(entry[len("Bash(") : len(entry)-1])
-		inner = strings.TrimSuffix(inner, ":*")
-		inner = strings.TrimSuffix(inner, "*")
-		inner = strings.TrimSpace(inner)
-		if inner == "" || allowedCmds[inner] {
-			continue
-		}
-		allowedCmds[inner] = true
-		allowRules = append(allowRules, fmt.Sprintf("command(%s)", inner))
 	}
 
-	// Explicitly deny high-risk commands unless the user explicitly allowed them
-	// (defense-in-depth in case the user's global agy settings.json has broad
-	// command allow rules).
 	var denyRules []string
-	for _, cmd := range []string{"curl", "wget", "psql", "sudo", "env"} {
-		if !allowedCmds[cmd] {
-			denyRules = append(denyRules, fmt.Sprintf("command(%s)", cmd))
-		}
+	for _, cmd := range DeniedCommands(allowed) {
+		denyRules = append(denyRules, fmt.Sprintf("command(%s)", cmd))
 	}
 	if target != "" {
 		denyRules = append(denyRules, fmt.Sprintf("write_file(%s)", target))
@@ -173,6 +263,9 @@ func Args(s Spec, allowed []string, skip bool, target, prompt string) []string {
 			a = append(a, "--permission-mode", "dontAsk")
 			if s.AllowedTools && len(allowed) > 0 {
 				a = append(a, "--allowedTools", strings.Join(allowed, ","))
+			}
+			if disallowed := claudeDisallowedTools(allowed); len(disallowed) > 0 {
+				a = append(a, "--disallowedTools", strings.Join(disallowed, ","))
 			}
 		}
 		// --add-dir <directories...> is variadic in Claude Code's CLI parser,

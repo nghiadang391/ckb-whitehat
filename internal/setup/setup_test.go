@@ -195,3 +195,37 @@ func TestRunCommandAndRecordPersistence(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildInitPromptIncludesPreScannedRepoFileHints(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "server"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "node_modules", "pkg"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "server", "schema.sql"), []byte(`--`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte(`ref:`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := BuildInitPrompt(dir, []string{"app"}, false)
+	for _, want := range []string{"Top-level files (pre-scanned", "- package.json", "- server/", "- server/schema.sql"} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("BuildInitPrompt missing %q:\n%s", want, p)
+		}
+	}
+	for _, skip := range []string{".git", "node_modules"} {
+		if strings.Contains(p, "- "+skip) {
+			t.Fatalf("BuildInitPrompt should skip %q:\n%s", skip, p)
+		}
+	}
+}
