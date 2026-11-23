@@ -118,10 +118,11 @@ The binary itself is self-contained, but a run needs local tooling:
 
 | Piece | Needed for | Without it |
 |---|---|---|
-| An agent CLI on PATH (`claude` or `codex`) | every run | the run fails before starting; `run` names the missing binary |
-| **Node** (18+) | running the agent-written PoCs (targets are Node apps) | PoCs cannot execute; static findings only |
+| An agent CLI on PATH (`claude` or `codex`) | every `init` and `run` | `init` and `run` fail fast before starting, naming the missing binary |
+| **Node** (18+) | running Node `.mjs` PoCs and embedded CKB/Fiber packs | Node PoCs cannot execute; static findings only |
+| **Cargo / Rust** | Rust CKB-script targets (`Cargo.toml` / `ckb-testtool`) | Rust PoCs cannot compile/run; `init` flags `cargo` as missing |
+| **Docker** | the on-chain evidence layer (`--chain` / `--scope app,chain`) — auto-starts the local CKB devnet + 2-node FNN harness with pre-funded CKB & `TEST_XUDT` channels (zero pre-funded testnet addresses needed) | `--chain` cannot auto-start the devnet harness |
 | A scratch **Postgres** | DB-backed PoCs (ledger, callback, race classes) | those findings report "DB unavailable" in FINDINGS.md instead of firing |
-| Two **Fiber (FNN) nodes** on a public testnet + our own addresses | the on-chain evidence layer (`--scope chain` / `--chain`) only | the run degrades to app-scope; on-chain section is N/A |
 
 `init` fails fast if no agent CLI (`claude` or `codex`) is on PATH, then runs
 the agent in **strictly read-only mode** (`Read,Glob,Grep,LS` — no `Bash`, no
@@ -171,14 +172,23 @@ the PoC runs against it in-tree: `node tapfiber/poc/attack.mjs`.
   `claude -p --verbose --output-format stream-json --permission-mode dontAsk --setting-sources user`
   and the default offline tool allowlist (`Bash(node:*)`,
   `Bash(pg_isready:*)`, `Bash(git:*)`, `Bash(grep:*)`, `Bash(ls:*)`,
-  `Bash(mkdir:*)`, `Bash(cd:*)`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `LS` —
+  `Bash(mkdir:*)`, `Bash(cd:*)`, plus `Bash(cargo:*)` automatically on Rust /
+  CKB-script targets, and `Read`, `Write`, `Edit`, `Grep`, `Glob`, `LS` —
   deliberately excluding `curl`, `wget`, `psql`, and command launchers like
   `env`). Unapproved tools fail
   immediately instead of silently blocking until stall timeout, and
   `--setting-sources user` prevents project-local `.claude/` settings in an
-  untrusted target repo from overriding permissions or hooks. Codex runs with
+  untrusted target repo from overriding permissions or hooks. During `init`,
+  inspection runs strictly read-only (`Read,Glob,Grep,LS` for Claude;
+  `--sandbox read-only` for Codex), and any suggested setup commands are
+  confined inside the target directory, scanned for shell/injection risks, and
+  require explicit per-command approval on a TTY. Codex runs with
   `codex exec --full-auto --json` and ignores `--allowed-tools` entirely (the
   CLI says so explicitly instead of implying enforcement).
+- **Mainnet refusal & strict on-chain verification**: `--chain` checks CKB
+  `get_blockchain_info` and FNN `chain_hash` before running and hard-refuses
+  CKB mainnet; post-run completeness independently re-verifies every reported
+  tx/payment/channel hash against the local devnet CKB/FNN RPC.
 - **Allowlists are still prompt/CLI level, not a sandbox**: `Bash(node:*)`
   can reach the network and filesystem.
 - The target is treated as untrusted *content* — the skill instructs the
