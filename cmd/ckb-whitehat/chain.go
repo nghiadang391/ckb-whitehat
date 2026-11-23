@@ -94,6 +94,11 @@ func printChainStatus(st chain.StatusReport, manifestPath string) {
 	if st.Manifest != nil {
 		fmt.Printf("manifest   : %s\n", manifestPath)
 	}
+	if chain.ScratchPostgresReady(context.Background()) {
+		fmt.Printf("scratch pg : running (%s)\n", chain.ScratchPGURL())
+	} else {
+		fmt.Println("scratch pg : stopped")
+	}
 }
 
 // chainEndpoints returns the CKB and FNN RPC URLs to check for mainnet safety
@@ -175,6 +180,57 @@ func detectCKBFiberStack(rec *setup.Record) bool {
 		}
 	}
 	return false
+}
+
+// needsPostgres reports whether the target repo uses Postgres (detected by
+// init's setup.json, a `pg` dependency in package.json, or a schema.sql file).
+func needsPostgres(target string, rec *setup.Record) bool {
+	if rec != nil {
+		for _, s := range rec.Plan.Stacks {
+			l := strings.ToLower(s)
+			if strings.Contains(l, "postgres") || l == "pg" {
+				return true
+			}
+		}
+		for _, svc := range rec.Plan.Services {
+			l := strings.ToLower(svc.Name)
+			if strings.Contains(l, "postgres") || l == "pg" {
+				return true
+			}
+		}
+	}
+	if target != "" {
+		if b, err := os.ReadFile(filepath.Join(target, "package.json")); err == nil {
+			if strings.Contains(string(b), `"pg"`) {
+				return true
+			}
+		}
+		for _, rel := range []string{"schema.sql", filepath.Join("server", "schema.sql")} {
+			if st, err := os.Stat(filepath.Join(target, rel)); err == nil && !st.IsDir() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// withEnvVar returns a copy of env with key=val replaced (or appended if absent).
+func withEnvVar(env []string, key, val string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	found := false
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			out = append(out, prefix+val)
+			found = true
+			continue
+		}
+		out = append(out, kv)
+	}
+	if !found {
+		out = append(out, prefix+val)
+	}
+	return out
 }
 
 // isRustStack reports whether the target is a Rust / CKB-script project

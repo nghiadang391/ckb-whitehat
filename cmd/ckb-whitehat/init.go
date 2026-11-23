@@ -139,9 +139,10 @@ func initCmd(a []string) int {
 		}
 	}
 
-	// Check host tools requested by the plan and detect running local services.
+	// Check host tools requested by the plan and detect running local CKB/Fiber
+	// services (skip un-credentialed host Postgres port 5432 probing).
 	rec.ToolChecks = setup.CheckTools(rec.Plan.Tools, nil)
-	cfg.Services = detect.Detect(ctx, detect.Options{})
+	cfg.Services = detect.Detect(ctx, detect.Options{PGPorts: []int{}})
 	if err := m.SaveConfig(ws, cfg); err != nil {
 		die(err.Error(), 1)
 	}
@@ -198,7 +199,7 @@ func initCmd(a []string) int {
 		} else if manifest != nil {
 			fmt.Println("\nlocal CKB/Fiber devnet harness:")
 			printChainSummary(manifest, mpath)
-			cfg.Services = detect.Detect(ctx, detect.Options{})
+			cfg.Services = detect.Detect(ctx, detect.Options{PGPorts: []int{}})
 			_ = m.SaveConfig(ws, cfg)
 		}
 	}
@@ -553,8 +554,15 @@ func printPrerequisitesWithSetup(cfg workspace.Config, rec setup.Record) {
 	}
 
 	// Print local service status + agent-discovered service hints.
-	if pgUp {
-		fmt.Println("  ok        Postgres detected (DB-backed PoCs ready)")
+	if chain.ScratchPostgresReady(ctx) {
+		pgUp = true
+		fmt.Printf("  ok        isolated Docker scratch Postgres ready (%s)\n", chain.ScratchPGURL())
+	} else if needsPostgres(cfg.Target, &rec) {
+		if chain.DockerAvailable(ctx) == nil {
+			fmt.Println("  ok        Docker available (isolated scratch Postgres will auto-start on 127.0.0.1:5439 during `run`)")
+		} else {
+			fmt.Println("  warning   target uses Postgres, but Docker is unavailable; set CKB_WHITEHAT_POSTGRES_URL before `run` for DB-backed PoCs")
+		}
 	}
 	for _, sh := range rec.Plan.Services {
 		lower := strings.ToLower(sh.Name)

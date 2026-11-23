@@ -411,7 +411,7 @@ func (h *Harness) Down(ctx context.Context, log io.Writer) error {
 	if log == nil {
 		log = io.Discard
 	}
-	for _, name := range []string{fnnBContainerName, fnnAContainerName, ckbContainerName} {
+	for _, name := range []string{fnnBContainerName, fnnAContainerName, ckbContainerName, scratchPGContainerName} {
 		_ = runDocker(ctx, "rm", "-f", name)
 	}
 	_ = runDocker(ctx, "network", "rm", dockerNetworkName)
