@@ -217,6 +217,49 @@ finding is UNPROVEN. A Static-class "PoC" that is only a grep has not run.
 - **Static class:** grep + offline brute-force demo (e.g. a known default
   secret → a captured hash is trivially recovered).
 
+### Common mistakes to avoid (hard-won from live runs — read before running tools)
+These exact pitfalls burned 20–30 wasted turns in real runs. Avoid every one:
+
+1. **Never hunt the host filesystem for DB passwords or credentials.**
+   - Use **only** the `$DATABASE_URL` already provided in your environment
+     (auto-provisioned isolated Docker scratch Postgres).
+   - Never `grep`, `find`, or run Node scripts over `$HOME`, `/etc`, `/var`,
+     `/opt`, `/root`, or shell profiles looking for Postgres passwords,
+     `.pgpass`, or `.env` files, and never spawn ad-hoc host `initdb`/`postgres`
+     clusters.
+   - If `$DATABASE_URL` is absent or unreachable after 1 check, mark DB-backed
+     findings `UNPROVEN` ("DB unavailable"), note it in `Honest limitations`,
+     and move on to provable findings.
+2. **Hard cap of 2 diagnostic probes — stop writing `_probe_*.mjs` chains.**
+   - Do not create a series of throwaway `_probe_*.mjs` scripts to debug the
+     environment. If an import, DB, or RPC probe fails twice, treat it as a
+     real blocker and move directly to writing PoCs that *can* run.
+3. **Never retry denied Bash commands with workarounds.**
+   - The CLI runs in `dontAsk` mode with a strict offline allowlist (`node`,
+     `git`, `grep`, `ls`, `mkdir`, `cd`, `pg_isready`, plus `cargo` on Rust
+     targets; **no** `psql`, `curl`, `wget`, `rm`, `find`, `cat >`, `env`, or
+     inline `KEY=VAL node ...`).
+   - Use built-in `Read`, `Glob`, `Grep`, `Write`, and `Edit` tools instead of
+     shell heredocs (`cat >`), `find`, or `rm`.
+   - Set custom env vars inside `.mjs` PoCs (`process.env.KEY = ...; await import(...)`)
+     instead of prefixing `KEY=VAL node ...` on the shell line.
+4. **Node ESM imports from `<workspace>/poc/`.**
+   - Node ESM ignores `NODE_PATH` for bare specifiers imported directly by a
+     PoC inside `<workspace>/poc/`.
+   - Modules imported *from inside the target repo* (`await import('/abs/target/server/config.js')`)
+     resolve `<target>/node_modules` automatically.
+   - If your PoC script itself needs a package installed in `<target>/node_modules`
+     (such as `pg`), load it cleanly via `createRequire('<target>/package.json')('pg')`
+     from `node:module` — do not guess `NODE_PATH` or `cd` tricks.
+5. **CKB / Fiber devnet RPC conventions (for `--chain` runs).**
+   - Import `../packs/chain-client.mjs` and read `$CKB_WHITEHAT_CHAIN_CONFIG`
+     instead of guessing RPC method names (`get_tip_block_number` exists on CKB,
+     not `get_tip_block_hash`; Fiber v0.10 uses `pubkey` in `node_info` and
+     `open_channel`, and PascalCase `ChannelReady`).
+   - Always record settled hashes via `recordChainEvidence(...)` and cite the
+     exact 32-byte `0x...` tx/payment hashes in `## On-chain evidence` so
+     strict post-run RPC verification passes.
+
 ## 4. What to dodge (from the committee's rejection record)
 
 Don't let a finding read as any of these — the exact reasons proposals were

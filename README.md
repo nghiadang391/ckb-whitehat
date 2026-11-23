@@ -121,8 +121,8 @@ The binary itself is self-contained, but a run needs local tooling:
 | An agent CLI on PATH (`claude` or `codex`) | every `init` and `run` | `init` and `run` fail fast before starting, naming the missing binary |
 | **Node** (18+) | running Node `.mjs` PoCs and embedded CKB/Fiber packs | Node PoCs cannot execute; static findings only |
 | **Cargo / Rust** | Rust CKB-script targets (`Cargo.toml` / `ckb-testtool`) | Rust PoCs cannot compile/run; `init` flags `cargo` as missing |
-| **Docker** | the on-chain evidence layer (`--chain` / `--scope app,chain`) — auto-starts the local CKB devnet + 2-node FNN harness with pre-funded CKB & `TEST_XUDT` channels (zero pre-funded testnet addresses needed) | `--chain` cannot auto-start the devnet harness |
-| A scratch **Postgres** | DB-backed PoCs (ledger, callback, race classes) | those findings report "DB unavailable" in FINDINGS.md instead of firing |
+| **Docker** | `--chain` local CKB devnet + 2-node FNN harness (pre-funded CKB & `TEST_XUDT` channels) **and** isolated scratch Postgres (`127.0.0.1:5439`, throwaway credentials) for Postgres targets — zero pre-funded testnet addresses or host DB passwords needed | `--chain` cannot auto-start devnet; DB PoCs require setting `CKB_WHITEHAT_POSTGRES_URL` manually |
+| `CKB_WHITEHAT_POSTGRES_URL` *(optional)* | overriding the auto-provisioned Docker scratch Postgres with your own scratch DB | Docker auto-provisions an isolated `postgres:16-alpine` container automatically |
 
 `init` fails fast if no agent CLI (`claude` or `codex`) is on PATH, then runs
 the agent in **strictly read-only mode** (`Read,Glob,Grep,LS` — no `Bash`, no

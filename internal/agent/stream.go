@@ -111,8 +111,8 @@ func (p *StreamParser) FeedLine(line string) {
 		p.handleClaudeUser(env.Message)
 	case "result":
 		p.handleClaudeResult(env)
-	case "system", "stream_event", "rate_limit_event":
-		// Recognized Claude protocol metadata; consume silently.
+	case "system", "stream_event", "rate_limit_event", "tool_progress":
+		// Recognized Claude protocol metadata/heartbeats; consume silently.
 
 	// Codex CLI --json events.
 	case "item.started":

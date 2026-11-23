@@ -15,9 +15,10 @@ func TestStreamParserClaudeEvents(t *testing.T) {
 	})
 
 	events := []string{
-		// Protocol metadata: consumed silently.
+		// Protocol metadata & heartbeats: consumed silently.
 		`{"type":"system","subtype":"init","session_id":"s-123"}`,
 		`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}`,
+		`{"type":"tool_progress","tool_name":"Bash","elapsed_time_seconds":30,"heartbeat":true}`,
 
 		// Assistant tool_use events across common tools + unknown tool.
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"contracts/lock.rs"}},{"type":"tool_use","name":"Write","input":{"file_path":"poc/exploit.rs"}},{"type":"tool_use","name":"Edit","input":{"file_path":"poc/exploit.rs"}},{"type":"tool_use","name":"Bash","input":{"command":"cargo test --nocapture"}},{"type":"tool_use","name":"Grep","input":{"pattern":"verify_signature","path":"contracts"}},{"type":"tool_use","name":"Glob","input":{"pattern":"**/*.rs"}},{"type":"tool_use","name":"CustomTool","input":{"foo":"bar"}}]}}`,

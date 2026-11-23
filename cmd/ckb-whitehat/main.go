@@ -421,7 +421,7 @@ Hard rules:
 4. No finding ships without a deterministic PoC that asserts observable state.
 5. Follow the FINDINGS.md template in the skill, including the mandatory
    on-chain/state-evidence section (one line if N/A).
-6. Be efficient: read code once, write one clean PoC per finding, don't spawn many throwaway probe scripts.
+6. Be efficient: read code once, write one clean PoC per finding, don't spawn many throwaway probe scripts. Follow the "Common mistakes to avoid" checklist in the skill strictly (never scan $HOME/host files for DB passwords, never retry denied Bash commands, use createRequire('<target>/package.json') for target packages like pg, and stop probing after 2 failed attempts).
 
 When finished, print a final line exactly of the form:
   CKB-WHITEHAT-RESULT: findings=<n> fired=<n> report=%s
@@ -511,8 +511,26 @@ func runCmd(a []string) int {
 		}
 	}
 
-	// Detect local services at run time so the agent doesn't re-probe them.
-	cfg.Services = detect.Detect(ctx, detect.Options{})
+	// Detect local CKB/Fiber services (never advertise un-credentialed host
+	// Postgres on port 5432, which wastes agent turns hunting host passwords).
+	cfg.Services = detect.Detect(ctx, detect.Options{PGPorts: []int{}})
+
+	// Auto-provision isolated Docker scratch Postgres (or use explicit
+	// CKB_WHITEHAT_POSTGRES_URL) when the target uses Postgres.
+	var scratchPGURL string
+	if !hasFlag(a, "no-scratch-pg") && (strings.TrimSpace(os.Getenv("CKB_WHITEHAT_POSTGRES_URL")) != "" || needsPostgres(cfg.Target, setupRec)) {
+		pgURL, _, pgErr := chain.EnsureScratchPostgres(ctx, os.Stdout)
+		if pgErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not start isolated Docker scratch Postgres: %v\n", pgErr)
+			fmt.Fprintln(os.Stderr, "         DB-backed PoCs will be skipped unless CKB_WHITEHAT_POSTGRES_URL is set.")
+		} else if pgURL != "" {
+			scratchPGURL = pgURL
+			cfg.Services = append([]string{
+				fmt.Sprintf("- Scratch Postgres is ready at %s (pre-configured in $DATABASE_URL — use this directly; NEVER probe host port 5432 or search $HOME for passwords)", pgURL),
+			}, cfg.Services...)
+		}
+	}
+
 	if err := m.SaveConfig(ws, cfg); err != nil {
 		die(err.Error(), 1)
 	}
@@ -645,6 +663,10 @@ func runCmd(a []string) int {
 		}
 		if chainManifest != nil {
 			env = append(env, chainManifest.EnvVars(manifestPath)...)
+		}
+		if scratchPGURL != "" {
+			env = withEnvVar(env, "DATABASE_URL", scratchPGURL)
+			env = withEnvVar(env, "CKB_WHITEHAT_POSTGRES_URL", scratchPGURL)
 		}
 		observer := func(line string) {}
 		if panelActive {
@@ -1020,6 +1042,7 @@ Flags:
   --scope app,chain      what to cover (chain auto-starts the local CKB/Fiber devnet harness)
   --chain                shorthand for --scope app,chain (refuses mainnet; strict RPC check)
   --no-chain-start       do not auto-start Docker devnet containers during init/run
+  --no-scratch-pg        do not auto-start isolated Docker scratch Postgres during run
   --agent claude|codex   which local agent CLI to drive (default: first detected)
   --allowed-tools LIST   comma-separated tool allowlist passed to the agent's
                          --allowedTools. Default (offline PoCs only): %s

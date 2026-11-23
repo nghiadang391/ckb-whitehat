@@ -67,3 +67,28 @@ func TestChainUsageExitsTwo(t *testing.T) {
 		t.Fatalf("code=%d out=%q", code, out)
 	}
 }
+
+func TestNeedsPostgresAndWithEnvVar(t *testing.T) {
+	dir := t.TempDir()
+	if needsPostgres(dir, nil) {
+		t.Fatal("empty dir should not need Postgres")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"dependencies":{"pg":"^8.0.0"}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !needsPostgres(dir, nil) {
+		t.Fatal("package.json with pg dep should need Postgres")
+	}
+	if !needsPostgres(t.TempDir(), &setup.Record{Plan: setup.Plan{Stacks: []string{"node", "postgres"}}}) {
+		t.Fatal("setup.json with postgres stack should need Postgres")
+	}
+
+	env := withEnvVar([]string{"A=1", "DATABASE_URL=old"}, "DATABASE_URL", "postgres://whitehat:whitehat@127.0.0.1:5439/whitehat")
+	if len(env) != 2 || env[1] != "DATABASE_URL=postgres://whitehat:whitehat@127.0.0.1:5439/whitehat" {
+		t.Fatalf("withEnvVar replace failed: %v", env)
+	}
+	env = withEnvVar([]string{"A=1"}, "DATABASE_URL", "postgres://new")
+	if len(env) != 2 || env[1] != "DATABASE_URL=postgres://new" {
+		t.Fatalf("withEnvVar append failed: %v", env)
+	}
+}
