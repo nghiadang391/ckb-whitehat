@@ -1,5 +1,5 @@
-// Package packs embeds reusable CKB/Fiber security invariant & attack harness
-// modules materialized into a workspace for `--chain` and CKB/Fiber audits.
+// Package packs embeds reusable CKB/Fiber defensive invariant-verification
+// harness modules materialized into a workspace for `--chain` and CKB/Fiber audits.
 package packs
 
 import (
@@ -13,7 +13,7 @@ import (
 //go:embed files/*.mjs
 var packFS embed.FS
 
-// Info describes one embedded CKB/Fiber invariant/attack pack.
+// Info describes one embedded CKB/Fiber invariant-verification pack.
 type Info struct {
 	File    string
 	Purpose string

@@ -36,10 +36,10 @@ type Result struct {
 }
 
 // Candidates defines auto-detection priority when --agent is omitted:
-// agy -> claude -> codex.
+// claude -> agy -> codex.
 var Candidates = []Spec{
-	{Agy, "agy", []string{"-p"}, true, false},
 	{Claude, "claude", []string{"-p"}, true, true},
+	{Agy, "agy", []string{"-p"}, true, false},
 	{Codex, "codex", []string{"exec"}, false, false},
 }
 
@@ -65,7 +65,7 @@ func Find(found []Spec, name string) (Spec, error) {
 	if name != "" {
 		return Spec{}, fmt.Errorf("unknown agent: %s", name)
 	}
-	return Spec{}, errors.New("no agent CLI found (need `agy`, `claude`, or `codex` on PATH). We never ask for an API key - the agent binary carries its own auth.")
+	return Spec{}, errors.New("no agent CLI found (need `claude`, `agy`, or `codex` on PATH). We never ask for an API key - the agent binary carries its own auth.")
 }
 
 // DefaultDeniedCommands lists high-risk shell command prefixes blocked by

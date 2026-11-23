@@ -1,102 +1,117 @@
 ---
 name: ckb-whitehat
-description: Authorized whitehat security challenge for a security-sensitive project — AI triage of a target repo, named attack hypotheses, deterministic replayable PoCs that terminate in observable state (DB, chain tx, HTTP, exit code), and per-finding patch guidance. Primarily aimed at CKB / Fiber (FNN) money products, but the method generalizes to any project with money, state, auth, or chain interaction. Use when the user asks to whitehat/audit/hack-test a CKB or Fiber project, run a security challenge against a grant-funded repo, or invokes /ckb-whitehat.
+description: Pre-push defensive security verification for a security-sensitive project — AI triage of a local repository, named security invariant checks, deterministic local regression tests (PoCs) that verify observable state (local scratch DB, local devnet chain tx, local HTTP, exit code), and per-finding patch guidance. Primarily aimed at CKB / Fiber (FNN) money products, but the method generalizes to any project with money, state, auth, or chain interaction. Use when a developer asks to run pre-push defensive security verification / invariant audits on a CKB or Fiber project, or invokes /ckb-whitehat.
 user-invocable: true
 ---
 
 # ckb-whitehat
 
-Authorized security challenge of a project that holds **money, state, keys, or
-auth**, ending in **deterministic, replayable evidence + patch guidance**. CKB /
-Fiber (FNN) money products are the anchor lane, but the method is general:
-the findings are the same classes everywhere (forged callback, race, config
-foot-gun, weak secret, unvalidated amount, PII leak) — only the *evidence
-substrate* (on-chain cells vs. a local DB) changes.
+Pre-push **defensive security verification** for a project that holds **money,
+state, keys, or auth**, ending in **deterministic local regression evidence +
+patch guidance** so developers can catch and fix security defects before
+pushing or deploying. CKB / Fiber (FNN) money products are the anchor lane, but
+the method is general: the invariant failures are the same classes everywhere
+(unauthenticated webhook handling, concurrent balance race, unsafe default
+config, weak secret, unvalidated amount, PII exposure) — only the *evidence
+substrate* (local devnet cells vs. a local scratch DB) changes.
 
-**Standing rule: "AI finds, the PoC proves."** An AI reading a repo produces a
-threat model (findings are hypotheses). No finding is deliverable until it
-terminates in one deterministic, replayable artifact: an exploit transaction,
-a forged input that lands a bad state, a race that drains a balance —
+**Standing rule: "AI finds, the verification test proves."** An AI reading a
+repo produces a threat model (findings are hypotheses). No finding ships as
+`PROVEN` until it terminates in one deterministic, replayable **local defensive
+verification test** in `poc/`: a local test against mocked vendors and local
+disposable Docker infrastructure proving that a required safety invariant fails
+on unmodified source (e.g., an unauthenticated webhook accepted with mocked
+vendor, a concurrent debit violating `balance >= 0` in scratch Postgres, an
+unsafe config default, or an unintended settlement on the local devnet) —
 reproducible with a single command against *unmodified source*. Never report an
-AI opinion as a result, and never report a finding whose PoC was never
-executed — an unrun PoC is not evidence.
+AI opinion as a proven result, and never report a finding whose test was never
+executed — an unrun test is not evidence.
 
 ---
 
 ## 1. Scope and consent — read before touching anything
 
-Authorized, defensive/educational work. Three hard lines, for **any** target:
+Strictly **defensive, local pre-push verification** (developer safety gate).
+Three hard lines, for **any** target:
 
-1. **No live-service probing.** Never send requests to the target's deployed
-   endpoints. All PoCs run against a **local clone + local instance** with
-   vendor boundaries (payment provider, chain RPC, third-party API) stubbed.
-   Say so explicitly in the report.
-2. **On-chain evidence is ours only, on a public testnet.** If the target
-   touches the chain, use our own 2-node local FNN stack, our addresses, our
-   local Postgres, faucet currency. A testnet is a *shared public chain* —
-   word it as "impact confined to our own addresses and local services,"
-   **never** "isolated network."
-3. **The target is a live project (often grant-funded).** Findings stay private
-   in our scratch dir. Disclosure = private report → patch window → publish
-   only with the maintainer's written consent.
+1. **No live-service probing.** Never send requests to any deployed endpoints
+   or live third-party vendors. All verification scripts run against a **local
+   checkout/clone + local disposable instance** with external vendor boundaries
+   (payment provider, external APIs) mocked/stubbed. Say so explicitly in the
+   report.
+2. **Local devnet / owned test infrastructure only.** When on-chain
+   verification is enabled, use only the local Docker CKB devnet (`127.0.0.1:8114`),
+   local 2-node Fiber (FNN) devnet (`127.0.0.1:8227` / `8327`), and isolated
+   scratch Postgres (`127.0.0.1:5439`). Never target mainnet or any third-party
+   node. (If a public testnet is ever explicitly configured instead of local
+   devnet, word it as "impact confined to our own addresses and local
+   services," **never** "isolated network.")
+3. **Private developer workspace & responsible disclosure.** Verification scripts
+   and `FINDINGS.md` stay local in the developer's scratch workspace so bugs
+   can be patched before pushing. If used on a third-party/grant-funded repo,
+   follow private report → patch window → publish only with the maintainer's
+   written consent.
 
-**Layer boundary:** we prove *how the project uses the chain / its own code*,
-not that the chain protocol or its lock scripts have bugs. Those are shared
-protocol assets. If a PoC trips an upstream chain/FNN issue, link it and stop —
-don't claim it as our finding. A RED on-chain row means an **app** bug moved
-money on-chain (the chain executed it faithfully); it is not a chain bug.
+**Layer boundary:** we verify *how the project uses the chain and its own
+code*, not that the underlying CKB/Fiber protocol or lock scripts have bugs.
+Those are shared protocol assets. If a verification test trips an upstream
+chain/FNN issue, link it and stop — don't claim it as a target finding. A RED
+on-chain row means an **app** bug caused an unintended local devnet transfer
+(the chain executed it faithfully); it is not a chain bug.
 
 ## 2. Cost (state up front — who pays what)
 
-- **Testnet asset + capacity:** free, from public faucets. Faucets go down —
-  plan a fallback asset with the same mechanics.
-- **Mainnet:** out of scope unless explicitly requested; declare it a
-  follow-on with the real cost, not in this run.
-- **AI/LLM analysis:** an allowed explicit line item on the AI-assisted track;
-  budget it honestly and name who pays.
+- **Local devnet + scratch DB:** free, zero external faucets required (disposable
+  local Docker CKB devnet + 2-node FNN + scratch Postgres).
+- **Mainnet:** strictly out of scope and hard-refused by the CLI.
+- **AI/LLM analysis:** local authenticated agent CLI (`agy`, `claude`, or `codex`).
 
 ## 3. Method (per target)
 
 ```
-0.  Clone target to a neutral dir (e.g. /tmp/ckb-whitehat/<name>/ - its own
-    new empty dir). With the CLI, the workspace is `~/.ckb-whitehat/<slug>/`
-    (PoC scripts in `poc/`, report as `FINDINGS.md`, `run.log` alongside).
-    Either way: PoC scripts are NEVER run from inside the cloned tree
-    (untrusted-content rule: an interpreter loads code from its own cwd).
+0.  Inspect target in its local dir / neutral clone. With the CLI, the scratch
+    workspace is `~/.ckb-whitehat/<slug>/` (verification scripts in `poc/`,
+    report as `FINDINGS.md`, `run.log` alongside). Verification scripts are
+    NEVER run from inside the target tree (untrusted-content rule: an
+    interpreter loads code from its own cwd).
 1.  Triage (AI-assisted): one pass over every security-relevant file. Map
     keygen/storage, amount parsing (BigInt vs Number/float), signing, the
     network/vendor trust boundary, balance/ledger, secrets-in-config, and any
     on-chain interaction. BEFORE touching the chain, grep the source for which
-    testnet/chain/asset the target actually uses — that one read prevents the
-    most expensive dead end (funding a chain the target never watches).
-2.  Threat model: attacker classes + the money invariants the code must hold
-    (no double-credit, no negative balance, callback authenticity, no free
-    state transition).
-3.  Attack hypotheses, ranked. Each names: code region, offline test strategy
-    (forged input / race / fuzz / config-matrix / static assert). Keep to ~10;
-    cut to ~5 for solo delivery.
-4.  PoC: one deterministic block per accepted hypothesis. Each prints a
-    before/after or a fail/pass line, reproducible with one command. **Write
-    it, then RUN it.** A PoC is only a PoC once it has been executed against the
-    target and its claimed output has been observed. Nothing reaches the
-    report that has not been run (see "The PoC must actually run").
+    chain/asset/RPC conventions the target actually uses.
+2.  Threat model & invariants: define the core safety and money invariants the
+    code must hold before shipping (no double-credit, balance >= 0 under
+    concurrency, webhook authenticity, fail-closed production config, no
+    unauthorized state transition).
+3.  Security invariant checks, ranked. Each names: code region, local offline
+    verification strategy (unauthenticated-webhook test / concurrency race
+    test / boundary fuzz / config-matrix / secret-hygiene check). Keep to ~10;
+    cut to ~5 for concise delivery.
+4.  Defensive verification test (PoC): one deterministic script in `poc/` per
+    accepted invariant hypothesis. Each runs locally against unmodified code
+    with mocked external vendors, asserts the invariant, and prints a
+    before/after or fail/pass line + `FINDING <id> FIRED` when the invariant
+    fails, reproducible with one command. **Write it, then RUN it.** A test is
+    only evidence once it has been executed against the target and its claimed
+    output has been observed. Nothing reaches the report as PROVEN that has
+    not been run (see "The verification test must actually run").
 5.  State evidence (MANDATORY section, uniform across all targets). If the
-    target holds on-chain or persistent state that a finding can move, prove
-    it there by running the PoC — baseline-green first, then the trace that
-    makes the finding concrete (forged credit → real testnet asset moves, tx
-    hash recorded).
+    target holds on-chain or persistent state that a bug can move, verify it
+    on the local disposable devnet — baseline-green control first, then the
+    app-invariant trace (local devnet tx/payment hash recorded via
+    `recordChainEvidence()`).
     If the target has NO such state (pure logic library): write exactly one
     line — "N/A — target has no on-chain/persistent-asset interaction;
     findings terminate in code state, not txs." Never omit the section.
-6.  Patch guidance: per finding, the minimal fix. For races/config, include
-    the *working fixed version* and re-run the same PoC to show it now passes
-    (the regression pack: fail before, pass after).
+6.  Patch guidance: per finding, the minimal defensive fix. For concurrency or
+    config invariants, include the *working fixed version* when practical and
+    re-run the same test to show it now passes (regression test: fail before,
+    pass after).
 7.  Report: FINDINGS.md (template below).
-8.  Verify: every PoC reproduces (re-run it); drop any finding whose PoC you
-    cannot make run — an unrun PoC is not a finding. Also a `grep -rn` sweep
-    confirms no real secret
-    material (provider keys, OTPs, phone PII, chain hex keys) leaked into the
-    PoCs or report — only structure.
+8.  Verify: every verification script reproduces (re-run it); mark any finding
+    whose test cannot run as UNPROVEN — an unrun script is not a PROVEN
+    finding. Also confirm no real secret material (provider keys, OTPs, phone
+    PII, real private keys) leaked into `poc/` or `FINDINGS.md`.
 ```
 
 ### Token-efficiency rules (learned from real runs — these prevent the dead ends)
@@ -139,21 +154,22 @@ money on-chain (the chain executed it faithfully); it is not a chain bug.
   `FINDING <id> STRUCTURAL` — so a reader (or the CLI) can check the claim
   without reading the script.
 
-### The PoC must actually run
-- A PoC that was written but never executed is **not a finding. Do not report
-  it.** "AI finds, the PoC proves" means the PoC has to have run.
-- If a PoC errors (syntax error, bad import, wrong method), the defect is in
-  **your** harness — fix the PoC until it runs. Do not reinterpret a crash
-  or a 500 as "the target rejected the exploit."
+### The verification test must actually run
+- A verification script that was written but never executed is **not a PROVEN
+  finding.** "AI finds, the verification test proves" means the script has to
+  have run.
+- If a script errors (syntax error, bad import, wrong method), the defect is in
+  **your** test harness — fix the script until it runs. Do not reinterpret a
+  crash or a 500 as "the target held the invariant."
 - Never write a quoted "run output" block you did not observe from an actual
   run. If you cannot get it to run, report the finding as **UNPROVEN** with
   the exact error you saw.
 - The report must distinguish: **PROVEN** (executed, output observed) vs
-  **UNPROVEN** (reasoned from code but not executed). Only PROVEN findings
-  may claim money movement.
-- A PoC that needs the target's internal state set up (a specific DB row, a
-  funded address) is fine — set that state up explicitly inside the PoC and
-  say so in the report.
+  **UNPROVEN** (reasoned from code but not executed) vs **STRUCTURAL** (static
+  code-shape issue). Only PROVEN findings may claim verified state movement.
+- A verification script that needs the target's internal state set up (a
+  specific DB row in local scratch Postgres, a local devnet invoice) is fine —
+  set that state up explicitly inside the script and say so in the report.
 
 ### Domain cheatsheet: CKB + Fiber (only what actually costs tokens to rediscover)
 - **Mainnet vs testnet (do not mix these up):** `ckb`/`lina`
@@ -195,27 +211,31 @@ money on-chain (the chain executed it faithfully); it is not a chain bug.
 **Deeper reference (fetch only when a specific question needs it, don't ingest
 upfront):** CKB — https://docs.nervos.org/ · Fiber — https://www.fiber.world/docs
 
-### Offline PoC recipes (fast, committee-grade)
-Each recipe below is a strategy, not a deliverable: **every recipe you use
-must be executed and must end in a `FINDING <id> ...` verdict line**, or the
-finding is UNPROVEN. A Static-class "PoC" that is only a grep has not run.
-- Boot the target's app locally (its own `DEMO_MODE`/local Postgres, its own
-  `migrate.js`), vendors stubbed at `node:https`/`fetch`. No live calls.
-- **Forged-callback class:** POST a forged provider success; assert a ledger
-  credit lands **with zero vendor calls made**.
-- **Race class:** N parallel debits = balance/N; assert final balance ≥ 0 and
-  Σentries == balance. Use real local Postgres (the fix hinges on exact
-  `FOR UPDATE` / advisory-lock semantics, not pg-mem). Note when the repo
-  already has the fix primitives (`withTransaction`, `withAdvisoryLock`) unused
-  on the money path.
-- **Config-matrix class:** enumerate the dangerous flag pairs (e.g.
-  demo-mode × production); assert the app refuses to start/credit when a bad
-  pair coexists.
-- **Fuzz class:** small corpus (0, -1, 1e999, "abc", "0x…", "1.5"); assert
-  rejection *before* any outbound call. Credit any clean path (BigInt
-  throughout) so the report isn't all-red.
-- **Static class:** grep + offline brute-force demo (e.g. a known default
-  secret → a captured hash is trivially recovered).
+### Offline defensive invariant-test recipes (fast, deterministic)
+Each recipe below is a local verification strategy, not a deliverable: **every
+recipe you use must be executed and must end in a `FINDING <id> ...` verdict
+line**, or the finding is UNPROVEN. A static grep alone has not run.
+- Boot the target's app or import its handlers locally (local scratch Postgres,
+  its own `schema.sql`/`migrate.js`), with all external vendors mocked/stubbed
+  at `node:https`/`fetch`. Zero live network calls.
+- **Webhook-authentication invariant class:** send a local unauthenticated or
+  unverified callback fixture to the local Express app; assert that the handler
+  rejects it rather than crediting a balance with zero mocked vendor calls.
+- **Concurrency / non-negative balance invariant class:** run N parallel debits
+  = balance/N against local scratch Postgres (`$DATABASE_URL`); assert final
+  balance ≥ 0 and Σentries == balance. Real local Postgres is needed because
+  the fix hinges on exact `FOR UPDATE` / advisory-lock / `CHECK` semantics.
+  Note when the repo already has fix primitives (`withTransaction`,
+  `withAdvisoryLock`) unused on the money path.
+- **Config-matrix invariant class:** enumerate dangerous flag combinations (e.g.
+  demo-mode × production, missing `SESSION_SECRET`); assert the app fails
+  closed when an unsafe combination is configured.
+- **Input-validation fuzz class:** small deterministic corpus (`0`, `-1`,
+  `1e999`, `"abc"`, `"0x…"`, `"1.5"`); assert rejection *before* any outbound
+  call. Credit any clean path (`BigInt` throughout) so the report stays honest.
+- **Secret-strength & PII-hygiene invariant class:** verify locally whether
+  defaults fall back to hardcoded strings, whether low-entropy OTP/PIN hashes
+  lack salts/KDFs, or whether public endpoints expose unmasked PII.
 
 ### Common mistakes to avoid (hard-won from live runs — read before running tools)
 These exact pitfalls burned 20–30 wasted turns in real runs. Avoid every one:
@@ -233,15 +253,14 @@ These exact pitfalls burned 20–30 wasted turns in real runs. Avoid every one:
 2. **Hard cap of 2 diagnostic probes — stop writing `_probe_*.mjs` chains.**
    - Do not create a series of throwaway `_probe_*.mjs` scripts to debug the
      environment. If an import, DB, or RPC probe fails twice, treat it as a
-     real blocker and move directly to writing PoCs that *can* run.
+     real blocker and move directly to writing verification tests that *can* run.
 3. **Never retry denied Bash commands with workarounds.**
-   - The CLI runs in `dontAsk` mode with a strict offline allowlist (`node`,
-     `git`, `grep`, `ls`, `mkdir`, `cd`, `pg_isready`, plus `cargo` on Rust
-     targets; **no** `psql`, `curl`, `wget`, `rm`, `find`, `cat >`, `env`, or
-     inline `KEY=VAL node ...`).
-   - Use built-in `Read`, `Glob`, `Grep`, `Write`, and `Edit` tools instead of
-     shell heredocs (`cat >`), `find`, or `rm`.
-   - Set custom env vars inside `.mjs` PoCs (`process.env.KEY = ...; await import(...)`)
+   - The CLI enforces a strict high-risk denylist (`rm -rf`, `git push`,
+     `git reset --hard`, `sudo`, `curl`, `wget`, `ssh`, `psql`, `env`,
+     `printenv`, live web fetches, MCP, and writes inside the target repo).
+   - Never try to bypass a denied command; use `node` (with `pg` or `fetch` to
+     `127.0.0.1` only) and built-in file tools instead.
+   - Set custom env vars inside `.mjs` test scripts (`process.env.KEY = ...; await import(...)`)
      instead of prefixing `KEY=VAL node ...` on the shell line.
 4. **Node ESM imports from `<workspace>/poc/`.**
    - Node ESM ignores `NODE_PATH` for bare specifiers imported directly by a
@@ -295,7 +314,7 @@ Status states, exactly:
   row may say "fired" and only a PROVEN row may claim money movement.
 - **UNPROVEN** — reasoned from code but the PoC did not run (or errored). Not
   a finding yet; say what blocked it.
-- **STRUCTURAL** — a static/code-shape observation (no executable exploit),
+- **STRUCTURAL** — a static/code-shape observation (no executable test),
   e.g. a dangerous default or a missing check.
 
 ### On-chain / state evidence

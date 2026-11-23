@@ -22,13 +22,13 @@ func candidateByKind(t *testing.T, kind Kind) Spec {
 }
 
 func TestCandidatesDefaultOrder(t *testing.T) {
-	want := []Kind{Agy, Claude, Codex}
+	want := []Kind{Claude, Agy, Codex}
 	if len(Candidates) != len(want) {
 		t.Fatalf("len(Candidates) = %d, want %d", len(Candidates), len(want))
 	}
 	for i, k := range want {
 		if Candidates[i].Name != k {
-			t.Fatalf("Candidates[%d].Name = %q, want %q (auto-detect order: agy -> claude -> codex)", i, Candidates[i].Name, k)
+			t.Fatalf("Candidates[%d].Name = %q, want %q (auto-detect order: claude -> agy -> codex)", i, Candidates[i].Name, k)
 		}
 	}
 }

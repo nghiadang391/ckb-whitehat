@@ -171,37 +171,69 @@ func TestLivePanelInitCommandPromptFitsViewport(t *testing.T) {
 	}
 }
 
-func TestAutoDetectPrefersAgyOverClaudeAndStreamsAgyInit(t *testing.T) {
-	home := t.TempDir()
-	fakebin := t.TempDir()
-	target := t.TempDir()
+func TestAutoDetectOrderClaudeThenAgyThenCodex(t *testing.T) {
+	t.Run("prefers claude over agy", func(t *testing.T) {
+		home := t.TempDir()
+		fakebin := t.TempDir()
+		target := t.TempDir()
 
-	// Put BOTH fake agy and fake claude on PATH; auto-detection (no --agent)
-	// must choose agy first (agy -> claude -> codex).
-	fakeClaude := filepath.Join(fakebin, "claude")
-	if err := os.WriteFile(fakeClaude, []byte("#!/bin/sh\necho 'WRONG_AGENT_CLAUDE' >&2; exit 99\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	fakeAgy := filepath.Join(fakebin, "agy")
-	const agyScript = `#!/bin/sh
+		fakeClaude := filepath.Join(fakebin, "claude")
+		const claudeScript = `#!/bin/sh
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"CKB-WHITEHAT-INIT: {\"stacks\":[\"node\"],\"summary\":\"Claude inspected\"}"}]}}'
+`
+		if err := os.WriteFile(fakeClaude, []byte(claudeScript), 0755); err != nil {
+			t.Fatal(err)
+		}
+		fakeAgy := filepath.Join(fakebin, "agy")
+		if err := os.WriteFile(fakeAgy, []byte("#!/bin/sh\necho 'WRONG_AGENT_AGY' >&2; exit 99\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		env := map[string]string{"HOME": home, "PATH": fakebin + string(os.PathListSeparator) + os.Getenv("PATH")}
+		code, out := runBin(t, env, "init", target)
+		if code != 0 {
+			t.Fatalf("init with claude+agy on PATH failed: code=%d\n%s", code, out)
+		}
+		if !strings.Contains(out, "agent  : claude (read-only inspection)") {
+			t.Fatalf("expected auto-detection to pick claude over agy, got:\n%s", out)
+		}
+		if !strings.Contains(out, "summary   Claude inspected") {
+			t.Fatalf("expected claude init plan parsed, got:\n%s", out)
+		}
+	})
+
+	t.Run("prefers agy over codex and streams agy init", func(t *testing.T) {
+		home := t.TempDir()
+		fakebin := t.TempDir()
+		target := t.TempDir()
+
+		// Isolated PATH with only fake agy + fake codex (plus /usr/bin:/bin for sh/printf,
+		// ensuring host claude is NOT on PATH).
+		fakeCodex := filepath.Join(fakebin, "codex")
+		if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\necho 'WRONG_AGENT_CODEX' >&2; exit 99\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		fakeAgy := filepath.Join(fakebin, "agy")
+		const agyScript = `#!/bin/sh
 printf '%s\n' '{"event":"init","conversation_id":"c1","init":{"permission_mode":"request-review"}}'
 printf '%s\n' '{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"package.json"}}}}'
 printf '%s\n' '{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"CKB-WHITEHAT-INIT: {\"stacks\":[\"node\"],\"summary\":\"Agy inspected\"}\n"}}'
 printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"CKB-WHITEHAT-INIT: {\"stacks\":[\"node\"],\"summary\":\"Agy inspected\"}\n"}}'
 `
-	if err := os.WriteFile(fakeAgy, []byte(agyScript), 0755); err != nil {
-		t.Fatal(err)
-	}
+		if err := os.WriteFile(fakeAgy, []byte(agyScript), 0755); err != nil {
+			t.Fatal(err)
+		}
 
-	env := map[string]string{"HOME": home, "PATH": fakebin + string(os.PathListSeparator) + os.Getenv("PATH")}
-	code, out := runBin(t, env, "init", target)
-	if code != 0 {
-		t.Fatalf("init with agy+claude on PATH failed: code=%d\n%s", code, out)
-	}
-	if !strings.Contains(out, "agent  : agy (read-only inspection)") {
-		t.Fatalf("expected auto-detection to pick agy over claude, got:\n%s", out)
-	}
-	if !strings.Contains(out, "summary   Agy inspected") {
-		t.Fatalf("expected agy stream-json init plan parsed, got:\n%s", out)
-	}
+		env := map[string]string{"HOME": home, "PATH": fakebin + ":/usr/bin:/bin"}
+		code, out := runBin(t, env, "init", target)
+		if code != 0 {
+			t.Fatalf("init with agy+codex on PATH failed: code=%d\n%s", code, out)
+		}
+		if !strings.Contains(out, "agent  : agy (read-only inspection)") {
+			t.Fatalf("expected auto-detection to pick agy over codex, got:\n%s", out)
+		}
+		if !strings.Contains(out, "summary   Agy inspected") {
+			t.Fatalf("expected agy stream-json init plan parsed, got:\n%s", out)
+		}
+	})
 }
