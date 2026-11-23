@@ -27,10 +27,11 @@ type Options struct {
 	HTTP       HTTPDoer
 	Timeout    time.Duration
 	PGPorts    []int
+	CKBPorts   []int
 	FNNPorts   []int
 }
 
-// Detect reports accepting Postgres and Fiber nodes. Probe failures are
+// Detect reports accepting Postgres, CKB, and Fiber nodes. Probe failures are
 // intentionally silent: a service that is not running is simply omitted.
 func Detect(ctx context.Context, opts Options) []string {
 	run := opts.RunCommand
@@ -49,6 +50,10 @@ func Detect(ctx context.Context, opts Options) []string {
 	if pgPorts == nil {
 		pgPorts = []int{5432, 5433, 5434}
 	}
+	ckbPorts := opts.CKBPorts
+	if ckbPorts == nil {
+		ckbPorts = []int{8114}
+	}
 	fnnPorts := opts.FNNPorts
 	if fnnPorts == nil {
 		// 8227/8327 are the classic 2-node setup ports; 8386/8387 are the
@@ -63,6 +68,14 @@ func Detect(ctx context.Context, opts Options) []string {
 			break
 		}
 	}
+	for _, port := range ckbPorts {
+		probeCtx, cancel := context.WithTimeout(ctx, timeout)
+		chainName, ok := probeCKB(probeCtx, doer, port)
+		cancel()
+		if ok {
+			out = append(out, fmt.Sprintf("- A CKB node is running at http://127.0.0.1:%d (chain=%s)", port, chainName))
+		}
+	}
 	for _, port := range fnnPorts {
 		probeCtx, cancel := context.WithTimeout(ctx, timeout)
 		info, ok := probeFNN(probeCtx, doer, port)
@@ -72,6 +85,32 @@ func Detect(ctx context.Context, opts Options) []string {
 		}
 	}
 	return out
+}
+
+func probeCKB(ctx context.Context, client HTTPDoer, port int) (string, bool) {
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"get_blockchain_info","params":[]}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(port), bytes.NewReader(body))
+	if err != nil {
+		return "", false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := client.Do(req)
+	if err != nil {
+		return "", false
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return "", false
+	}
+	var raw struct {
+		Result struct {
+			Chain string `json:"chain"`
+		} `json:"result"`
+	}
+	if json.NewDecoder(res.Body).Decode(&raw) != nil || raw.Result.Chain == "" {
+		return "", false
+	}
+	return raw.Result.Chain, true
 }
 
 type rpcResponse struct {

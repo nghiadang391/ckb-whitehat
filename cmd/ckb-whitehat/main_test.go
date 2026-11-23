@@ -135,7 +135,7 @@ func TestBuildPromptDepsState(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(target, "package.json"), []byte(`{"name":"demo"}`), 0644); err != nil {
 			t.Fatal(err)
 		}
-		p := buildPrompt(ws, workspace.Config{Target: target, Scope: []string{"app"}}, false, nil)
+		p := buildPrompt(ws, workspace.Config{Target: target, Scope: []string{"app"}}, false, nil, nil, "", false)
 		if !strings.Contains(p, "target dependencies are NOT installed") {
 			t.Fatalf("expected missing-deps notice in prompt, got:\n%s", p)
 		}
@@ -155,7 +155,7 @@ func TestBuildPromptDepsState(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(target, "node_modules"), 0755); err != nil {
 			t.Fatal(err)
 		}
-		p := buildPrompt(ws, workspace.Config{Target: target, Scope: []string{"app"}}, false, nil)
+		p := buildPrompt(ws, workspace.Config{Target: target, Scope: []string{"app"}}, false, nil, nil, "", false)
 		wantPath := filepath.Join(target, "node_modules")
 		if !strings.Contains(p, "target dependencies are installed at "+wantPath) {
 			t.Fatalf("expected installed-deps path %q in prompt, got:\n%s", wantPath, p)
@@ -164,7 +164,7 @@ func TestBuildPromptDepsState(t *testing.T) {
 
 	t.Run("non-node repo omits npm deps line", func(t *testing.T) {
 		target := t.TempDir()
-		p := buildPrompt(ws, workspace.Config{Target: target, Scope: []string{"app"}}, false, nil)
+		p := buildPrompt(ws, workspace.Config{Target: target, Scope: []string{"app"}}, false, nil, nil, "", false)
 		if strings.Contains(p, "target dependencies are") {
 			t.Fatalf("expected no npm deps line for repo without package.json")
 		}
