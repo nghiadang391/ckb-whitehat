@@ -167,3 +167,42 @@ func TestIsManagedClone(t *testing.T) {
 		t.Fatal("repos root itself must not count as a managed clone")
 	}
 }
+
+func TestCleanWorkspacesPreservesChainDir(t *testing.T) {
+	h := t.TempDir()
+	m := New(h)
+	chainFile := filepath.Join(m.root(), "chain", "contracts", "funding-lock")
+	if err := os.MkdirAll(filepath.Dir(chainFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(chainFile, []byte("contract"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	wsFile := filepath.Join(m.root(), "some-workspace", "FINDINGS.md")
+	if err := os.MkdirAll(filepath.Dir(wsFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wsFile, []byte("report"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	repoFile := filepath.Join(m.root(), "repos", "demo", "README.md")
+	if err := os.MkdirAll(filepath.Dir(repoFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(repoFile, []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Clean(true); err != nil {
+		t.Fatalf("Clean(true): %v", err)
+	}
+	if _, err := os.Stat(chainFile); err != nil {
+		t.Fatalf("Clean(true) must preserve ~/.ckb-whitehat/chain/, got err=%v", err)
+	}
+	if _, err := os.Stat(wsFile); !os.IsNotExist(err) {
+		t.Fatalf("Clean(true) should remove workspace dir, stat err=%v", err)
+	}
+	if _, err := os.Stat(repoFile); !os.IsNotExist(err) {
+		t.Fatalf("Clean(true) should remove repos dir, stat err=%v", err)
+	}
+}

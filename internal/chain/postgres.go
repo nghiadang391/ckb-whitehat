@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -36,12 +37,24 @@ func scratchPGImage() string {
 }
 
 // ScratchPostgresReady reports whether the managed Docker scratch Postgres
-// container is currently running and accepting connections.
+// container is currently running and accepting TCP connections on localhost.
+// Passing `-h 127.0.0.1 -p 5432` avoids the postgres:16-alpine initdb race
+// where Unix-socket `pg_isready` returns 0 during temporary bootstrap before
+// TCP listening begins, and the host-side TCP dial confirms port forwarding.
 func ScratchPostgresReady(ctx context.Context) bool {
 	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	return runDocker(cctx, "exec", scratchPGContainerName,
-		"pg_isready", "-U", scratchPGUser, "-d", scratchPGDB) == nil
+	if err := runDocker(cctx, "exec", scratchPGContainerName,
+		"pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", scratchPGUser, "-d", scratchPGDB); err != nil {
+		return false
+	}
+	d := net.Dialer{Timeout: 1 * time.Second}
+	conn, err := d.DialContext(cctx, "tcp", fmt.Sprintf("127.0.0.1:%d", DefaultScratchPGPort))
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // EnsureScratchPostgres returns a ready Postgres connection URL for PoCs:
@@ -80,6 +93,7 @@ func EnsureScratchPostgres(ctx context.Context, log io.Writer) (string, bool, er
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
+			_ = runDocker(context.Background(), "rm", "-f", scratchPGContainerName)
 			return "", false, ctx.Err()
 		}
 		if ScratchPostgresReady(ctx) {
@@ -88,6 +102,7 @@ func EnsureScratchPostgres(ctx context.Context, log io.Writer) (string, bool, er
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+	_ = runDocker(context.Background(), "rm", "-f", scratchPGContainerName)
 	return "", false, fmt.Errorf("timed out waiting for scratch Postgres container on 127.0.0.1:%d", DefaultScratchPGPort)
 }
 

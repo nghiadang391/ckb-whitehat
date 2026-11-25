@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nghiadang391/ckb-whitehat/internal/chain"
 	"github.com/nghiadang391/ckb-whitehat/internal/setup"
 	"github.com/nghiadang391/ckb-whitehat/internal/workspace"
 )
@@ -76,5 +77,34 @@ func TestNeedsPostgresAndWithEnvVar(t *testing.T) {
 	env = withEnvVar([]string{"A=1"}, "DATABASE_URL", "postgres://new")
 	if len(env) != 2 || env[1] != "DATABASE_URL=postgres://new" {
 		t.Fatalf("withEnvVar append failed: %v", env)
+	}
+}
+
+func TestRunChainEndpointsPrefersLiveManifestOverStaleEnv(t *testing.T) {
+	t.Setenv("CKB_RPC_URL", "http://127.0.0.1:9999")
+	t.Setenv("FIBER_RPC_URL", "http://127.0.0.1:9998")
+	m := &chain.Manifest{
+		ChainHash: "0x1111111111111111111111111111111111111111111111111111111111111111",
+		CKBRPCURL: "http://127.0.0.1:8114",
+		NodeA:     chain.NodeEndpoint{RPCURL: "http://127.0.0.1:8227"},
+		NodeB:     chain.NodeEndpoint{RPCURL: "http://127.0.0.1:8327"},
+		CKBChannel: &chain.ChannelSummary{
+			ChannelID:     "0x2222222222222222222222222222222222222222222222222222222222222222",
+			FundingTxHash: "0x3333333333333333333333333333333333333333333333333333333333333333",
+		},
+		UDT: &chain.UDTConfig{
+			Script: chain.Script{
+				CodeHash: "0x4444444444444444444444444444444444444444444444444444444444444444",
+				Args:     "0x5555555555555555555555555555555555555555555555555555555555555555",
+			},
+		},
+	}
+	ckbURL, fnnURLs := runChainEndpoints(m)
+	if ckbURL != "http://127.0.0.1:8114" || len(fnnURLs) != 2 || fnnURLs[0] != "http://127.0.0.1:8227" || fnnURLs[1] != "http://127.0.0.1:8327" {
+		t.Fatalf("runChainEndpoints should prefer managed manifest over stale env: ckb=%q fnn=%v", ckbURL, fnnURLs)
+	}
+	ignore, bootstrap := manifestVerificationHashes(m)
+	if len(ignore) != 3 || len(bootstrap) != 2 {
+		t.Fatalf("manifestVerificationHashes unexpected: ignore=%v bootstrap=%v", ignore, bootstrap)
 	}
 }

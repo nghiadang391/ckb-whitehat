@@ -450,11 +450,19 @@ func runCmd(a []string) int {
 	defer stopSignals()
 	m := workspace.New("")
 	spec := targetFrom(a)
+	// Never allow `run --install-deps` to bypass `init`'s read-only inspection,
+	// `--ignore-scripts` default, and per-command approval flow.
+	ro := resolveOpts(a)
+	if ro.Install {
+		fmt.Fprintln(os.Stderr, "note: --install-deps is only supported during 'ckb-whitehat init' (with per-command approval); ignoring during run")
+		ro.Install = false
+	}
+
 	// Re-resolve a URL target (re-cloning if its managed dir was cleaned) so
 	// the workspace is keyed on the local clone path, exactly as init did.
 	local := resolveLocal(m, spec)
 	if workspace.IsURL(spec) {
-		if dir, _, err := m.ResolveTargetOpts(spec, resolveOpts(a)); err == nil {
+		if dir, _, err := m.ResolveTargetOpts(spec, ro); err == nil {
 			local = dir
 		} else {
 			// Don't fall back to a stale local dir when the URL target
@@ -472,7 +480,7 @@ func runCmd(a []string) int {
 	// A cleaned or re-pointed clone re-resolves from its recorded origin.
 	if cfg.TargetOrigin == "clone" && cfg.CloneURL != "" {
 		if _, serr := os.Stat(cfg.Target); errors.Is(serr, os.ErrNotExist) {
-			if dir, rcfg, rerr := m.ResolveTargetOpts(cfg.CloneURL, resolveOpts(a)); rerr == nil {
+			if dir, rcfg, rerr := m.ResolveTargetOpts(cfg.CloneURL, ro); rerr == nil {
 				cfg.Target, cfg.Commit = dir, rcfg.Commit
 			}
 		}
@@ -673,7 +681,11 @@ func runCmd(a []string) int {
 			env = withNodePath(env, filepath.Join(cfg.Target, "node_modules"))
 		}
 		if chainManifest != nil {
-			env = append(env, chainManifest.EnvVars(manifestPath)...)
+			for _, kv := range chainManifest.EnvVars(manifestPath) {
+				if k, v, ok := strings.Cut(kv, "="); ok {
+					env = withEnvVar(env, k, v)
+				}
+			}
 		}
 		if scratchPGURL != "" {
 			env = withEnvVar(env, "DATABASE_URL", scratchPGURL)
@@ -763,11 +775,14 @@ func runCmd(a []string) int {
 	}
 	var chainOpts verify.ChainCheckOpts
 	if cfg.Onchain {
-		ckbURL, fnnURLs := chainEndpoints(chainManifest)
+		ckbURL, fnnURLs := runChainEndpoints(chainManifest)
+		ignoreHashes, bootstrapHashes := manifestVerificationHashes(chainManifest)
 		chainOpts = verify.ChainCheckOpts{
-			Enabled: true,
-			CKBURL:  ckbURL,
-			FNNURLs: fnnURLs,
+			Enabled:         true,
+			CKBURL:          ckbURL,
+			FNNURLs:         fnnURLs,
+			IgnoreHashes:    ignoreHashes,
+			BootstrapHashes: bootstrapHashes,
 		}
 	}
 	return finishRun(ctx, lastRes, ws, logPath, stall, max, chainOpts)
@@ -877,7 +892,7 @@ func finishRun(ctx context.Context, res agent.Result, ws, logPath string, stall,
 
 	if marker != nil {
 		fmt.Printf("\nfindings=%d fired=%d\n", marker.Findings, marker.Fired)
-		fmt.Printf("report: %s\n", strings.TrimSpace(marker.Report))
+		fmt.Printf("report: %s\n", gates.SanitizeSingleLine(strings.TrimSpace(marker.Report)))
 		// documented exit codes: 0 ok, 1 finding/error, 2 bad usage
 		if marker.Findings > 0 || marker.Fired > 0 {
 			code = 1

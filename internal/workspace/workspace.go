@@ -364,7 +364,9 @@ func (m Manager) Clean(includeWorkspaces bool) error {
 			return err
 		}
 		for _, e := range entries {
-			if e.IsDir() && e.Name() != "repos" {
+			// Preserve managed clones ("repos", already cleaned above) and
+			// the local Docker devnet harness state/contracts ("chain").
+			if e.IsDir() && e.Name() != "repos" && e.Name() != "chain" {
 				if err := os.RemoveAll(filepath.Join(m.root(), e.Name())); err != nil {
 					return err
 				}

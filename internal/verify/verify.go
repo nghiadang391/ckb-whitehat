@@ -30,10 +30,19 @@ type ChainCheckOpts struct {
 	CKBURL  string
 	FNNURLs []string
 	RPC     *chain.RPCClient
+	// IgnoreHashes lists contextual 32-byte manifest hashes (e.g. chain_hash,
+	// UDT code_hash/args) that may legitimately be cited in prose inside
+	// `## On-chain evidence` without being transactions or payments.
+	IgnoreHashes []string
+	// BootstrapHashes lists pre-bootstrapped devnet channel/funding hashes
+	// already printed in the prompt. They are valid if cited alongside a real
+	// run transaction/payment, but echoing ONLY bootstrap hashes does not
+	// prove new on-chain activity.
+	BootstrapHashes []string
 }
 
 var markerRE = regexp.MustCompile(`CKB-WHITEHAT-RESULT: findings=([0-9]+) fired=([0-9]+) report=(.+)`)
-var verdictRE = regexp.MustCompile(`(?m)^FINDING\s+(\S+)\s+(FIRED|UNPROVEN|STRUCTURAL)\b`)
+var verdictRE = regexp.MustCompile(`(?m)^\s*(?:[-*]\s+)?(?:\*\*)?FINDING\s+(\S+)\s+(FIRED|UNPROVEN|STRUCTURAL)\b`)
 var onchainHeadingRE = regexp.MustCompile(`(?mi)^##\s+on-chain\b[^\n]*$`)
 var nextH2RE = regexp.MustCompile(`(?m)^##\s+`)
 var hash32RE = regexp.MustCompile(`0x[0-9a-fA-F]{64}`)
@@ -69,11 +78,12 @@ func VerifyRunWithChain(ctx context.Context, workspace, stdout string, marker *M
 		{What: "report exists and is non-trivial: " + reportPath, OK: len([]rune(trimSpace(report))) > 200},
 		{What: "agent printed the CKB-WHITEHAT-RESULT: marker", OK: marker != nil},
 	}
-	if marker != nil && (marker.Findings > 0 || marker.Fired > 0) {
+	if marker != nil && marker.Fired > 0 {
 		entries, _ := os.ReadDir(pocDir)
 		files := 0
 		for _, entry := range entries {
-			if !entry.IsDir() && entry.Name() != "" && entry.Name()[0] != '.' {
+			name := entry.Name()
+			if !entry.IsDir() && name != "" && name[0] != '.' && name != "chain-evidence.json" {
 				files++
 			}
 		}
@@ -82,8 +92,16 @@ func VerifyRunWithChain(ctx context.Context, workspace, stdout string, marker *M
 			Check{What: "a FINDING <id> verdict line was printed (" + strconv.Itoa(len(verdictRE.FindAllStringSubmatch(stdout, -1))) + ")", OK: verdictRE.MatchString(stdout)},
 			Check{What: "the report carries FINDING verdict lines (" + strconv.Itoa(len(verdictRE.FindAllStringSubmatch(report, -1))) + ")", OK: verdictRE.MatchString(report)},
 		)
+	} else if marker != nil && marker.Findings > 0 {
+		// Static/STRUCTURAL or UNPROVEN-only run (findings > 0, fired == 0):
+		// still require machine-readable FINDING verdict lines in stdout &
+		// report, without falsely demanding executable PoCs or on-chain txs.
+		checks = append(checks,
+			Check{What: "a FINDING <id> verdict line was printed (" + strconv.Itoa(len(verdictRE.FindAllStringSubmatch(stdout, -1))) + ")", OK: verdictRE.MatchString(stdout)},
+			Check{What: "the report carries FINDING verdict lines (" + strconv.Itoa(len(verdictRE.FindAllStringSubmatch(report, -1))) + ")", OK: verdictRE.MatchString(report)},
+		)
 	}
-	if chainOpts.Enabled && marker != nil && (marker.Findings > 0 || marker.Fired > 0) {
+	if chainOpts.Enabled && marker != nil && marker.Fired > 0 {
 		checks = append(checks, verifyOnChainSection(ctx, workspace, report, chainOpts)...)
 	}
 	return checks
@@ -110,12 +128,12 @@ func isNASection(body string) bool {
 	return strings.HasPrefix(upper, "N/A") || strings.HasPrefix(upper, "NONE")
 }
 
-func collectEvidenceHashes(workspace, section string) []string {
+func collectEvidenceHashes(workspace, section string, ignore map[string]bool) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(h string) {
 		h = strings.ToLower(strings.TrimSpace(h))
-		if h == "" || seen[h] {
+		if h == "" || seen[h] || ignore[h] {
 			return
 		}
 		seen[h] = true
@@ -156,7 +174,20 @@ func verifyOnChainSection(ctx context.Context, workspace, report string, opts Ch
 			{What: "non-N/A ## On-chain evidence section in FINDINGS.md (--chain scope)", OK: false},
 		}
 	}
-	hashes := collectEvidenceHashes(workspace, section)
+	ignore := make(map[string]bool, len(opts.IgnoreHashes))
+	for _, h := range opts.IgnoreHashes {
+		if n := strings.ToLower(strings.TrimSpace(h)); n != "" {
+			ignore[n] = true
+		}
+	}
+	bootstrap := make(map[string]bool, len(opts.BootstrapHashes))
+	for _, h := range opts.BootstrapHashes {
+		if n := strings.ToLower(strings.TrimSpace(h)); n != "" {
+			bootstrap[n] = true
+		}
+	}
+
+	hashes := collectEvidenceHashes(workspace, section, ignore)
 	if len(hashes) == 0 {
 		return []Check{
 			{What: "non-N/A ## On-chain evidence section in FINDINGS.md (--chain scope)", OK: true},
@@ -169,9 +200,13 @@ func verifyOnChainSection(ctx context.Context, workspace, report string, opts Ch
 		rpc = chain.NewRPCClient()
 	}
 	var verified, unverified []string
+	nonBootstrapTxOrPay := 0
 	for _, h := range hashes {
 		if kind, ok := chain.VerifyHashOnChain(ctx, rpc, h, opts.CKBURL, opts.FNNURLs); ok {
 			verified = append(verified, h[:12]+"…("+kind+")")
+			if !bootstrap[h] && kind != "ckb_block" {
+				nonBootstrapTxOrPay++
+			}
 		} else {
 			unverified = append(unverified, h)
 		}
@@ -184,6 +219,12 @@ func verifyOnChainSection(ctx context.Context, workspace, report string, opts Ch
 			What: fmt.Sprintf("all %d reported on-chain hash(es) verified via local CKB/FNN RPC (%s)", len(verified), strings.Join(verified, ", ")),
 			OK:   true,
 		})
+		if len(bootstrap) > 0 && nonBootstrapTxOrPay == 0 {
+			checks = append(checks, Check{
+				What: "at least one non-bootstrap tx or settled Fiber payment (found only pre-bootstrapped devnet/block hashes)",
+				OK:   false,
+			})
+		}
 	} else {
 		checks = append(checks, Check{
 			What: fmt.Sprintf("on-chain RPC verification failed for %d/%d hash(es): %s", len(unverified), len(hashes), strings.Join(unverified, ", ")),

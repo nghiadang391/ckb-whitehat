@@ -501,9 +501,27 @@ func VerifyMainnetSafe(ctx context.Context, rpc *RPCClient, ckbURL string, fnnUR
 	return nil
 }
 
+// CKBGetBlock queries CKB `get_block` for a 32-byte block hash (used to
+// distinguish legitimate cited block hashes from hallucinated tx hashes).
+func (c *RPCClient) CKBGetBlock(ctx context.Context, url, hash string) (bool, error) {
+	var raw json.RawMessage
+	if err := c.Call(ctx, url, "get_block", []any{hash}, &raw); err != nil {
+		return false, err
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return false, nil
+	}
+	var blk ckbBlock
+	if err := json.Unmarshal(raw, &blk); err != nil {
+		return false, nil
+	}
+	return strings.TrimSpace(blk.Header.Hash) != "", nil
+}
+
 // VerifyHashOnChain checks whether a 32-byte 0x-prefixed hash corresponds to a
-// real committed/proposed CKB transaction, a settled Fiber payment, or a known
-// Fiber channel/funding tx on the local CKB/FNN endpoints.
+// real committed/proposed CKB transaction, a settled Fiber payment (`Success`),
+// a known Fiber channel/funding tx, or a CKB block on the local CKB/FNN endpoints.
 func VerifyHashOnChain(ctx context.Context, rpc *RPCClient, hash, ckbURL string, fnnURLs []string) (kind string, ok bool) {
 	if rpc == nil {
 		rpc = NewRPCClient()
@@ -512,7 +530,7 @@ func VerifyHashOnChain(ctx context.Context, rpc *RPCClient, hash, ckbURL string,
 	if ckbURL != "" {
 		if st, err := rpc.CKBGetTransaction(ctx, ckbURL, norm); err == nil && st != nil {
 			s := strings.ToLower(st.TxStatus.Status)
-			if s == "committed" || s == "proposed" || s == "pending" {
+			if s == "committed" || s == "proposed" {
 				return "ckb_tx(" + s + ")", true
 			}
 		}
@@ -522,7 +540,7 @@ func VerifyHashOnChain(ctx context.Context, rpc *RPCClient, hash, ckbURL string,
 			continue
 		}
 		if pay, err := rpc.FNNGetPayment(ctx, u, norm); err == nil && pay != nil {
-			if strings.EqualFold(pay.Status, "Success") || strings.EqualFold(pay.Status, "Inflight") || strings.EqualFold(pay.Status, "Created") {
+			if strings.EqualFold(pay.Status, "Success") {
 				return "fiber_payment(" + pay.Status + ")", true
 			}
 		}
@@ -535,6 +553,11 @@ func VerifyHashOnChain(ctx context.Context, rpc *RPCClient, hash, ckbURL string,
 					return "fiber_funding_tx(" + ch.StateName() + ")", true
 				}
 			}
+		}
+	}
+	if ckbURL != "" {
+		if found, err := rpc.CKBGetBlock(ctx, ckbURL, norm); err == nil && found {
+			return "ckb_block", true
 		}
 	}
 	return "", false

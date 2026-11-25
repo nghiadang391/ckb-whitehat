@@ -2,11 +2,12 @@
 // Reads $CKB_WHITEHAT_CHAIN_CONFIG (~/.ckb-whitehat/chain.json) and records
 // verified on-chain hashes into <workspace>/poc/chain-evidence.json.
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 export function loadChainManifest() {
   const p = process.env.CKB_WHITEHAT_CHAIN_CONFIG ||
-    path.join(process.env.HOME || '', '.ckb-whitehat', 'chain.json')
+    path.join(os.homedir(), '.ckb-whitehat', 'chain.json')
   if (!fs.existsSync(p)) {
     throw new Error(`chain manifest not found at ${p} — run: ckb-whitehat chain up`)
   }
@@ -19,6 +20,10 @@ export async function rpc(url, method, params = []) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
   })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`RPC ${method} HTTP ${res.status}: ${text.slice(0, 200)}`)
+  }
   const body = await res.json()
   if (body.error) {
     throw new Error(`RPC ${method} failed: ${body.error.message || JSON.stringify(body.error)}`)
@@ -34,11 +39,20 @@ export async function generateBlocks(ckbUrl, count = 1) {
   return hashes
 }
 
-export async function newInvoice(fnnUrl, { amountHex, currency = 'Fibd', description = 'ckb-whitehat-poc', udtTypeScript = null, paymentPreimage = null, paymentHash = null }) {
+export async function newInvoice(fnnUrl, {
+  amountHex,
+  currency = 'Fibd',
+  description = 'ckb-whitehat-poc',
+  udtTypeScript = null,
+  paymentPreimage = null,
+  paymentHash = null,
+  hashAlgorithm = null,
+}) {
   const params = { amount: amountHex, currency, description }
   if (udtTypeScript) params.udt_type_script = udtTypeScript
   if (paymentPreimage) params.payment_preimage = paymentPreimage
   if (paymentHash) params.payment_hash = paymentHash
+  if (hashAlgorithm) params.hash_algorithm = hashAlgorithm
   return rpc(fnnUrl, 'new_invoice', [params])
 }
 
@@ -62,7 +76,10 @@ export function recordChainEvidence(entry) {
   fs.mkdirSync(path.dirname(evPath), { recursive: true })
   let list = []
   if (fs.existsSync(evPath)) {
-    try { list = JSON.parse(fs.readFileSync(evPath, 'utf8')) } catch {}
+    try {
+      const parsed = JSON.parse(fs.readFileSync(evPath, 'utf8'))
+      if (Array.isArray(parsed)) list = parsed
+    } catch {}
   }
   list.push({ recorded_at: new Date().toISOString(), ...entry })
   fs.writeFileSync(evPath, JSON.stringify(list, null, 2) + '\n')

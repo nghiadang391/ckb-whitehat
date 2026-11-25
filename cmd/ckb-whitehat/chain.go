@@ -101,8 +101,9 @@ func printChainStatus(st chain.StatusReport, manifestPath string) {
 	}
 }
 
-// chainEndpoints returns the CKB and FNN RPC URLs to check for mainnet safety
-// and post-run on-chain verification.
+// chainEndpoints returns all CKB and FNN RPC URLs to check for preflight
+// mainnet safety (honoring exported env overrides first so an exported mainnet
+// CKB_RPC_URL is always refused).
 func chainEndpoints(m *chain.Manifest) (ckbURL string, fnnURLs []string) {
 	ckbURL = os.Getenv("CKB_RPC_URL")
 	if ckbURL == "" {
@@ -136,6 +137,56 @@ func chainEndpoints(m *chain.Manifest) (ckbURL string, fnnURLs []string) {
 		add(fmt.Sprintf("http://127.0.0.1:%d", chain.DefaultNodeBPort))
 	}
 	return ckbURL, fnnURLs
+}
+
+// runChainEndpoints returns the exact CKB and FNN RPC URLs used by the run's
+// PoCs for post-run verification: when a managed devnet manifest `m` is active,
+// it takes precedence over any stale shell CKB_RPC_URL/FIBER_RPC_URL env vars
+// (matching the env vars injected into the agent process).
+func runChainEndpoints(m *chain.Manifest) (ckbURL string, fnnURLs []string) {
+	if m != nil {
+		ckbURL = strings.TrimSpace(m.CKBRPCURL)
+		if ckbURL == "" {
+			ckbURL = fmt.Sprintf("http://127.0.0.1:%d", chain.DefaultCKBPort)
+		}
+		for _, u := range []string{m.NodeA.RPCURL, m.NodeB.RPCURL} {
+			if u = strings.TrimSpace(u); u != "" {
+				fnnURLs = append(fnnURLs, u)
+			}
+		}
+		if len(fnnURLs) > 0 {
+			return ckbURL, fnnURLs
+		}
+	}
+	return chainEndpoints(m)
+}
+
+// manifestVerificationHashes extracts contextual metadata hashes (chain_hash,
+// UDT script hashes) to ignore if cited in prose and pre-bootstrapped devnet
+// channel/funding hashes so echoing bootstrap hashes alone cannot pass strict
+// on-chain evidence verification.
+func manifestVerificationHashes(m *chain.Manifest) (ignore, bootstrap []string) {
+	if m == nil {
+		return nil, nil
+	}
+	add := func(dst *[]string, v string) {
+		if v = strings.TrimSpace(v); v != "" {
+			*dst = append(*dst, v)
+		}
+	}
+	add(&ignore, m.ChainHash)
+	if m.UDT != nil {
+		add(&ignore, m.UDT.Script.CodeHash)
+		add(&ignore, m.UDT.Script.Args)
+	}
+	for _, ch := range []*chain.ChannelSummary{m.CKBChannel, m.UDTChannel} {
+		if ch == nil {
+			continue
+		}
+		add(&bootstrap, ch.ChannelID)
+		add(&bootstrap, ch.FundingTxHash)
+	}
+	return ignore, bootstrap
 }
 
 // ensureDevnetChain enforces the mainnet refusal guard and, when autoStart is

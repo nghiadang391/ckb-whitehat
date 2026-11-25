@@ -110,6 +110,26 @@ func TestAnalyzeCommandRisk(t *testing.T) {
 	if len(w) < 2 {
 		t.Fatalf("expected chaining + high-risk warnings for prompt-injected command, got %v", w)
 	}
+	// Bypass regressions (C3): --ignore-scripts=false, comment spoof, single &, rm -r -f, pip install, cargo build, npx.
+	for _, tc := range []struct {
+		cmd     string
+		wantSub string
+	}{
+		{"npm install --ignore-scripts=false", "--ignore-scripts"},
+		{"npm install lodash # --ignore-scripts", "--ignore-scripts"},
+		{"npm ci --ignore-scripts & id", "chaining"},
+		{"rm -r -f /tmp/x", "high-risk"},
+		{"node --eval 'process.exit(1)'", "high-risk"},
+		{"npx malicious-pkg", "high-risk"},
+		{"pip install -r requirements.txt", "high-risk"},
+		{"cargo build", "high-risk"},
+	} {
+		ws := AnalyzeCommandRisk(tc.cmd, false)
+		joined := strings.Join(ws, " | ")
+		if !strings.Contains(joined, tc.wantSub) {
+			t.Errorf("AnalyzeCommandRisk(%q) = %v, want warning containing %q", tc.cmd, ws, tc.wantSub)
+		}
+	}
 }
 
 func TestCheckToolsRejectsPathTraversalNames(t *testing.T) {
@@ -218,10 +238,14 @@ func TestBuildInitPromptIncludesPreScannedRepoFileHints(t *testing.T) {
 	}
 
 	p := BuildInitPrompt(dir, []string{"app"}, false)
-	for _, want := range []string{"Top-level files (pre-scanned", "- package.json", "- server/", "- server/schema.sql"} {
+	for _, want := range []string{"BEGIN UNTRUSTED FILE LIST", "END UNTRUSTED FILE LIST", "- package.json", "- server/", "- server/schema.sql"} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("BuildInitPrompt missing %q:\n%s", want, p)
 		}
+	}
+	// File hints must appear AFTER SECURITY RULES so untrusted filenames cannot preempt rules.
+	if strings.Index(p, "SECURITY RULES:") > strings.Index(p, "BEGIN UNTRUSTED FILE LIST") {
+		t.Fatalf("untrusted file list must appear after SECURITY RULES:\n%s", p)
 	}
 	for _, skip := range []string{".git", "node_modules"} {
 		if strings.Contains(p, "- "+skip) {

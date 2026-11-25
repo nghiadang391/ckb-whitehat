@@ -725,7 +725,12 @@ func renderSetupActionBar(width int) string {
 }
 
 func stylePromptLine(l promptLine, contentWidth int) []string {
-	wrapped := wrapDisplay(l.text, contentWidth, 2)
+	maxLines := 2
+	if l.tone == "cyan" || l.tone == "yellow" {
+		// Allow setup commands and risk warnings more room before clipping.
+		maxLines = 6
+	}
+	wrapped := wrapDisplay(l.text, contentWidth, maxLines)
 	out := make([]string, 0, len(wrapped))
 	for _, w := range wrapped {
 		t := truncateDisplay(w, contentWidth)
