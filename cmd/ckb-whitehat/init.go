@@ -357,12 +357,12 @@ func handleSetupCommands(ctx context.Context, target string, cmds []setup.SetupC
 				Status:   defaultStatus,
 			}
 			outcomes = append(outcomes, o)
-			fmt.Printf("  [%s] (%s) %s\n", o.Status, sc.Dir, gates.SanitizeSingleLine(sc.Command))
+			fmt.Printf("  [%s] (%s) %s\n", o.Status, gates.SanitizeSingleLine(sc.Dir), gates.SanitizeSingleLine(sc.Command))
 			if sc.Reason != "" {
-				fmt.Printf("           reason: %s\n", sc.Reason)
+				fmt.Printf("           reason: %s\n", gates.SanitizeSingleLine(sc.Reason))
 			}
 			for _, w := range warnings {
-				fmt.Printf("           warning: %s\n", w)
+				fmt.Printf("           warning: %s\n", gates.SanitizeSingleLine(w))
 			}
 		}
 		return outcomes, false
@@ -402,7 +402,7 @@ func handleSetupCommands(ctx context.Context, target string, cmds []setup.SetupC
 		choice := promptSetupCommandPanel(panel, paintMu, panelVisible, i+1, len(cmds), sc, warnings)
 		switch choice {
 		case "approve":
-			fmt.Printf("\nrunning setup command (%d/%d) in %s: %s\n", i+1, len(cmds), sc.Dir, gates.SanitizeSingleLine(sc.Command))
+			fmt.Printf("\nrunning setup command (%d/%d) in %s: %s\n", i+1, len(cmds), gates.SanitizeSingleLine(sc.Dir), gates.SanitizeSingleLine(sc.Command))
 			code, err := setup.RunCommand(ctx, target, sc, os.Stdout)
 			o := setup.CommandOutcome{
 				Command:  sc.Command,
@@ -443,25 +443,42 @@ func handleSetupCommands(ctx context.Context, target string, cmds []setup.SetupC
 }
 
 func promptSetupCommandPanel(p *LivePanel, paintMu *sync.Mutex, panelVisible *bool, idx, total int, sc setup.SetupCommand, warnings []string) string {
-	lines := []promptLine{
-		{text: "$ " + sc.Command, tone: "cyan"},
-		{text: "dir: " + sc.Dir, tone: "dim"},
-	}
-	if sc.Reason != "" {
-		lines = append(lines, promptLine{text: "why: " + sc.Reason, tone: ""})
-	}
+	safeCmd := gates.SanitizeSingleLine(sc.Command)
+	safeDir := gates.SanitizeSingleLine(sc.Dir)
+	safeReason := gates.SanitizeSingleLine(sc.Reason)
+	safeWarnings := make([]string, 0, len(warnings))
 	for _, w := range warnings {
+		safeWarnings = append(safeWarnings, gates.SanitizeSingleLine(w))
+	}
+
+	// Put risk warnings ahead of reason so tight terminals never drop warnings.
+	lines := []promptLine{
+		{text: "$ " + safeCmd, tone: "cyan"},
+		{text: "dir: " + safeDir, tone: "dim"},
+	}
+	for _, w := range safeWarnings {
 		lines = append(lines, promptLine{text: "⚠ " + w, tone: "yellow"})
+	}
+	if safeReason != "" {
+		lines = append(lines, promptLine{text: "why: " + safeReason, tone: ""})
 	}
 	title := fmt.Sprintf("Setup Command (%d/%d)", idx, total)
 
 	paintMu.Lock()
+	// Always print the complete untruncated command and every risk warning
+	// above the approval box so long arguments or warnings can never be hidden
+	// behind TUI box wrapping/clipping before the user approves.
+	_, _ = os.Stdout.WriteString(p.Teardown())
+	fmt.Printf("\n[%s] dir=%s\n  $ %s\n", title, safeDir, safeCmd)
+	for _, w := range safeWarnings {
+		fmt.Printf("  WARNING: %s\n", w)
+	}
 	p.SetStage("confirm")
 	p.SetSize(TerminalSize())
 	cols, _ := TerminalSize()
 	p.SetCommandPrompt(title, lines, renderSetupActionBar(cols))
 	fmt.Print("\x1b[?25l")
-	_, _ = os.Stdout.WriteString(p.Teardown() + p.Render())
+	_, _ = os.Stdout.WriteString(p.Render())
 	*panelVisible = true
 	paintMu.Unlock()
 

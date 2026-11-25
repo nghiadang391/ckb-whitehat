@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -149,11 +150,48 @@ func DeniedCommands(allowed []string) []string {
 	return out
 }
 
-func claudeDisallowedTools(allowed []string) []string {
+// claudeTargetPathPattern formats target as a Claude Code absolute-path glob
+// pattern anchored to the filesystem root (`//abs/path/**`). In Claude Code's
+// permission syntax a single leading `/` is relative to the settings directory,
+// whereas `//` anchors to filesystem root.
+func claudeTargetPathPattern(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(target))
+	cleaned = strings.TrimRight(cleaned, "/")
+	if cleaned == "" {
+		return "//**"
+	}
+	if strings.HasPrefix(cleaned, "/") {
+		return "/" + cleaned + "/**"
+	}
+	return cleaned + "/**"
+}
+
+// claudeEmptyMCPConfig disables all user/project MCP servers when paired with
+// `--strict-mcp-config`, matching agy's `mcp(*)` deny rule.
+const claudeEmptyMCPConfig = `{"mcpServers":{}}`
+
+// claudeReadOnlyDisallowedTools explicitly denies every mutating, shell, and
+// network tool during `ckb-whitehat init` so user-level `~/.claude/settings.json`
+// allow rules (loaded via `--setting-sources user`) can never override the
+// read-only inspection boundary.
+const claudeReadOnlyDisallowedTools = "Bash,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch"
+
+func claudeDisallowedTools(allowed []string, target string) []string {
 	denied := DeniedCommands(allowed)
-	out := make([]string, 0, len(denied)+2)
+	out := make([]string, 0, len(denied)+6)
 	for _, cmd := range denied {
 		out = append(out, fmt.Sprintf("Bash(%s:*)", cmd))
+	}
+	// Block writes/edits inside the target repository (matching agy's
+	// write_file(<target>) deny rule).
+	if pat := claudeTargetPathPattern(target); pat != "" {
+		for _, tool := range []string{"Write", "Edit", "MultiEdit", "NotebookEdit"} {
+			out = append(out, fmt.Sprintf("%s(%s)", tool, pat))
+		}
 	}
 	// Block live web fetches/searches unless explicitly requested in allowed.
 	allowWeb := map[string]bool{}
@@ -264,9 +302,12 @@ func Args(s Spec, allowed []string, skip bool, target, prompt string) []string {
 			if s.AllowedTools && len(allowed) > 0 {
 				a = append(a, "--allowedTools", strings.Join(allowed, ","))
 			}
-			if disallowed := claudeDisallowedTools(allowed); len(disallowed) > 0 {
+			if disallowed := claudeDisallowedTools(allowed, target); len(disallowed) > 0 {
 				a = append(a, "--disallowedTools", strings.Join(disallowed, ","))
 			}
+			// Disable user/project MCP servers unless --yolo was requested.
+			// --mcp-config is variadic so --strict-mcp-config follows it.
+			a = append(a, "--mcp-config", claudeEmptyMCPConfig, "--strict-mcp-config")
 		}
 		// --add-dir <directories...> is variadic in Claude Code's CLI parser,
 		// so it MUST appear before non-variadic flags (never directly before
@@ -306,7 +347,16 @@ func ReadOnlyArgs(s Spec, allowed []string, target, prompt string) []string {
 		if s.AllowedTools && len(allowed) > 0 {
 			a = append(a, "--allowedTools", strings.Join(allowed, ","))
 		}
-		a = append(a, "--add-dir", target, "--setting-sources", "user", "--verbose", "--output-format", "stream-json", "--")
+		a = append(a,
+			"--disallowedTools", claudeReadOnlyDisallowedTools,
+			"--mcp-config", claudeEmptyMCPConfig,
+			"--strict-mcp-config",
+			"--add-dir", target,
+			"--setting-sources", "user",
+			"--verbose",
+			"--output-format", "stream-json",
+			"--",
+		)
 	case s.Name == Codex:
 		a = append(a, "--sandbox", "read-only", "--json", "--color", "never", "-c", "project_doc_max_bytes=0")
 	default:

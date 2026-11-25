@@ -200,8 +200,9 @@ func (h *Harness) Up(ctx context.Context, log io.Writer) (*Manifest, error) {
 		return nil, fmt.Errorf("fetch Fiber devnet contracts: %w", err)
 	}
 
-	// Clean any stale partial containers/data from a prior interrupted run.
-	_ = h.Down(ctx, io.Discard)
+	// Clean any stale partial devnet containers/data from a prior interrupted
+	// run (without touching a running scratch Postgres container).
+	_ = h.downDevnet(ctx, io.Discard)
 
 	ckbDir := filepath.Join(h.dataDir(), "ckb")
 	fnnADir := filepath.Join(h.dataDir(), "fnn-a")
@@ -405,13 +406,14 @@ func (h *Harness) Up(ctx context.Context, log io.Writer) (*Manifest, error) {
 	return manifest, nil
 }
 
-// Down stops and removes all managed devnet containers, Docker network,
-// devnet data dir, and chain.json (preserving SHA-256-verified cached contracts).
-func (h *Harness) Down(ctx context.Context, log io.Writer) error {
+// downDevnet stops and removes the managed CKB/Fiber devnet containers, Docker
+// network, devnet data dir, and chain.json (preserving cached contracts and
+// leaving any managed scratch Postgres container untouched).
+func (h *Harness) downDevnet(ctx context.Context, log io.Writer) error {
 	if log == nil {
 		log = io.Discard
 	}
-	for _, name := range []string{fnnBContainerName, fnnAContainerName, ckbContainerName, scratchPGContainerName} {
+	for _, name := range []string{fnnBContainerName, fnnAContainerName, ckbContainerName} {
 		_ = runDocker(ctx, "rm", "-f", name)
 	}
 	_ = runDocker(ctx, "network", "rm", dockerNetworkName)
@@ -427,6 +429,14 @@ func (h *Harness) Down(ctx context.Context, log io.Writer) error {
 	_ = os.Remove(h.ManifestPath())
 	fmt.Fprintln(log, "stopped local CKB/Fiber devnet harness")
 	return nil
+}
+
+// Down stops and removes all managed devnet containers, Docker network,
+// devnet data dir, chain.json, and managed scratch Postgres (preserving
+// SHA-256-verified cached contracts).
+func (h *Harness) Down(ctx context.Context, log io.Writer) error {
+	_ = StopScratchPostgres(ctx)
+	return h.downDevnet(ctx, log)
 }
 
 // EnsureContracts downloads and SHA-256 verifies the 5 official Fiber v0.10.1

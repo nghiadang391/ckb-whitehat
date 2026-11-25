@@ -35,17 +35,19 @@ func TestCandidatesDefaultOrder(t *testing.T) {
 
 func TestArgs(t *testing.T) {
 	claude := candidateByKind(t, Claude)
-	wantClaudeDisallowed := strings.Join(claudeDisallowedTools(nil), ",")
+	wantClaudeDisallowed := strings.Join(claudeDisallowedTools(nil, "/target"), ",")
 
-	// Claude default (skip=false) with allowed tools + strict disallowedTools.
-	// --add-dir <directories...> is variadic, so non-variadic flags and "--"
-	// must separate it from the positional prompt.
+	// Claude default (skip=false) with allowed tools + strict disallowedTools + MCP lockdown.
+	// --add-dir <directories...> and --mcp-config <configs...> are variadic, so
+	// non-variadic flags and "--" must separate them from the positional prompt.
 	got := Args(claude, []string{"Bash(*)", "Read", "Write"}, false, "/target", "prompt")
 	want := []string{
 		"-p",
 		"--permission-mode", "dontAsk",
 		"--allowedTools", "Bash(*),Read,Write",
 		"--disallowedTools", wantClaudeDisallowed,
+		"--mcp-config", claudeEmptyMCPConfig,
+		"--strict-mcp-config",
 		"--add-dir", "/target",
 		"--setting-sources", "user",
 		"--verbose",
@@ -56,7 +58,11 @@ func TestArgs(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("claude skip=false:\ngot:  %#v\nwant: %#v", got, want)
 	}
-	for _, mustDeny := range []string{"Bash(rm -rf:*)", "Bash(git push:*)", "Bash(sudo:*)", "Bash(curl:*)", "WebFetch", "WebSearch"} {
+	for _, mustDeny := range []string{
+		"Bash(rm -rf:*)", "Bash(git push:*)", "Bash(sudo:*)", "Bash(curl:*)",
+		"Write(//target/**)", "Edit(//target/**)", "MultiEdit(//target/**)", "NotebookEdit(//target/**)",
+		"WebFetch", "WebSearch",
+	} {
 		if !strings.Contains(wantClaudeDisallowed, mustDeny) {
 			t.Fatalf("claude disallowedTools missing %q: %s", mustDeny, wantClaudeDisallowed)
 		}
@@ -70,12 +76,14 @@ func TestArgs(t *testing.T) {
 		}
 	}
 
-	// Claude skip=false with no allowed tools omits --allowedTools but keeps --disallowedTools.
+	// Claude skip=false with no allowed tools omits --allowedTools but keeps --disallowedTools and MCP lockdown.
 	got = Args(claude, nil, false, "/target", "prompt")
 	want = []string{
 		"-p",
 		"--permission-mode", "dontAsk",
 		"--disallowedTools", wantClaudeDisallowed,
+		"--mcp-config", claudeEmptyMCPConfig,
+		"--strict-mcp-config",
 		"--add-dir", "/target",
 		"--setting-sources", "user",
 		"--verbose",
@@ -202,6 +210,9 @@ func TestReadOnlyArgs(t *testing.T) {
 		"-p",
 		"--permission-mode", "dontAsk",
 		"--allowedTools", "Read,Glob,Grep,LS",
+		"--disallowedTools", claudeReadOnlyDisallowedTools,
+		"--mcp-config", claudeEmptyMCPConfig,
+		"--strict-mcp-config",
 		"--add-dir", "/target",
 		"--setting-sources", "user",
 		"--verbose",

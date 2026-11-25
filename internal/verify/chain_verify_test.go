@@ -92,4 +92,33 @@ func TestVerifyRunWithChainStrictRPC(t *testing.T) {
 	if checks[len(checks)-1].OK {
 		t.Fatalf("expected hallucinated hash to fail RPC verification: %+v", checks)
 	}
+
+	// 4. Contextual manifest hashes (IgnoreHashes) do not false-fail when paired with a real tx.
+	const manifestMeta = "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	optsWithMeta := opts
+	optsWithMeta.IgnoreHashes = []string{manifestMeta}
+	wsMeta := makeWS("Chain hash " + manifestMeta + " and settled tx " + goodTx)
+	checks = VerifyRunWithChain(context.Background(), wsMeta, stdout, marker, optsWithMeta)
+	for _, c := range checks {
+		if !c.OK {
+			t.Fatalf("expected contextual manifest hash to be ignored cleanly, failed: %+v", c)
+		}
+	}
+
+	// 5. Echoing ONLY pre-bootstrapped channel/funding hashes fails bootstrap guard.
+	optsBoot := opts
+	optsBoot.BootstrapHashes = []string{goodTx}
+	wsBootOnly := makeWS("Bootstrap funding tx " + goodTx)
+	checks = VerifyRunWithChain(context.Background(), wsBootOnly, stdout, marker, optsBoot)
+	if checks[len(checks)-1].OK {
+		t.Fatalf("expected bootstrap-only hashes to fail non-bootstrap check: %+v", checks)
+	}
+	// Pairing bootstrap hash with a real settled payment passes.
+	wsBootPlusPay := makeWS("Bootstrap funding tx " + goodTx + " and payment " + goodPay)
+	checks = VerifyRunWithChain(context.Background(), wsBootPlusPay, stdout, marker, optsBoot)
+	for _, c := range checks {
+		if !c.OK {
+			t.Fatalf("expected bootstrap + real payment to pass, failed: %+v", c)
+		}
+	}
 }

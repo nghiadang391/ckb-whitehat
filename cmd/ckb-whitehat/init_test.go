@@ -59,8 +59,11 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 	if !strings.Contains(flagsPart, "--allowedTools Read,Glob,Grep,LS") {
 		t.Fatalf("init must pass strictly read-only tools, got flags: %q", flagsPart)
 	}
-	if strings.Contains(flagsPart, "Bash") || strings.Contains(flagsPart, "Write") || strings.Contains(flagsPart, "Edit") {
-		t.Fatalf("init flags must NOT allow Bash, Write, or Edit, got flags: %q", flagsPart)
+	if !strings.Contains(flagsPart, "--disallowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch") {
+		t.Fatalf("init must explicitly disallow mutating/shell tools for claude, got flags: %q", flagsPart)
+	}
+	if !strings.Contains(flagsPart, "--strict-mcp-config") {
+		t.Fatalf("init must disable MCP servers for claude, got flags: %q", flagsPart)
 	}
 
 	// Verify output reports detected stack, missing tool, service hint, and skips
